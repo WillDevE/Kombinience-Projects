@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+
+{% block title %}Kombini Video{% endblock %}
+
+{% block content %}
+<div class="main-content">
+    <div class="video-list">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5>Recent Videos</h5>
+            {% if user %}
+            <button id="upload-btn" class="btn btn-sm btn-primary">
+                <i class="fas fa-upload me-1"></i> Upload
+            </button>
+            {% endif %}
+        </div>
+        
+        <div id="video-list-container">
+        {% if videos %}
+            {% for video in videos %}
+            <div class="video-list-item" data-video-id="{{ video[0] }}" data-video-url="https://{{ aws_config.S3_BUCKET_NAME }}.s3-{{ aws_config.S3_REGION_NAME }}.amazonaws.com/videos/{{ video[1] }}" 
+                 data-video-title="{{ video[2] }}" data-video-description="{{ video[10] }}" onclick="loadVideo(this)">
+                <div class="video-list-thumb">
+                    <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBwcmVzZXJ2ZUFzcGVjdFJhdGlvPSJ4TWlkWU1pZCI+PHJlY3QgZmlsbD0iIzMzMyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiLz48Y2lyY2xlIGZpbGw9IiM1NTUiIGN4PSI1MCIgY3k9IjUwIiByPSIzMCIvPjxwb2x5Z29uIGZpbGw9IiNhYWEiIHBvaW50cz0iMzUsMzUgNzAsNTAgMzUsNjUiLz48L3N2Zz4=" 
+                         data-src="https://{{ aws_config.S3_BUCKET_NAME }}.s3-{{ aws_config.S3_REGION_NAME }}.amazonaws.com/thumbnails/{{ video[8] }}" 
+                         alt="{{ video[2] }}"
+                         loading="lazy"
+                         onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/placeholder.svg') }}'">
+                    <div class="video-duration">{{ '%d:%02d'|format(video[5]//60, video[5]%60) }}</div>
+                </div>
+                <div class="video-list-info">
+                    <div class="video-list-title">{{ video[2] }}</div>
+                    <div class="d-flex flex-column">
+                        <small class="uploader-name" style="color: var(--primary);">{{ video[4] or 'Anonymous' }}</small>
+                        <div class="d-flex justify-content-between align-items-end mt-1">
+                            <small>{{ video[3] }}</small>
+                            <small class="text-muted">{{ (video[9]/1024/1024)|round(1) }} MB</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="text-center p-4">
+                <p>No videos available</p>
+            </div>
+        {% endif %}
+        </div>
+        
+        <div id="loading-indicator" class="text-center p-3 d-none">
+            <div class="spinner-border spinner-border-sm text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <span class="ms-2">Loading more videos...</span>
+        </div>
+    </div>
+    
+    <div class="player-section">
+        <div class="video-player">
+            <video id="main-video-player" controls preload="none" poster="{{ url_for('static', filename='img/placeholder.svg') }}" style="width: 100%; height: 100%; object-fit: contain;">
+                Your browser does not support the video tag.
+            </video>
+        </div>
+        <div class="video-details mt-3">
+            <h4 id="video-title">Select a video to play</h4>
+            <p id="video-uploader" style="color: var(--primary);"></p>
+            <p id="video-description" class="text-light"></p>
+            <div id="video-actions" class="video-actions d-none">
+                <button class="btn btn-sm btn-discord" id="copy-discord">
+                    <i class="fab fa-discord me-1"></i> Copy for Discord
+                </button>
+                <button class="btn btn-sm btn-secondary" id="copy-direct">
+                    <i class="fas fa-link me-1"></i> Copy Direct URL
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Global variables for current video
+    let currentVideoUrl = '';
+    let currentVideoTitle = '';
+    let currentPage = parseInt('{{ page }}');
+    let isLoading = false;
+    let hasMoreVideos = {{ 'true' if page < total_pages else 'false' }};
+    
+    // Function to load a video
+    function loadVideo(element) {
+        // Get video data from the element's data attributes
+        const videoId = element.dataset.videoId;
+        const videoUrl = element.dataset.videoUrl;
+        const videoTitle = element.dataset.videoTitle;
+        const videoDescription = element.dataset.videoDescription || '';
+        const videoUploader = element.querySelector('.uploader-name').textContent;
+        
+        // Store current video data for copy actions
+        currentVideoUrl = videoUrl;
+        currentVideoTitle = videoTitle;
+        
+        // Update video player
+        const player = document.getElementById('main-video-player');
+        const titleEl = document.getElementById('video-title');
+        const uploaderEl = document.getElementById('video-uploader');
+        const descEl = document.getElementById('video-description');
+        const actionsEl = document.getElementById('video-actions');
+        
+        if (player && videoUrl) {
+            player.poster = '';  // Clear poster
+            player.src = videoUrl;
+            
+            if (titleEl) titleEl.textContent = videoTitle;
+            if (uploaderEl) uploaderEl.textContent = videoUploader;
+            if (descEl) descEl.textContent = videoDescription;
+            if (actionsEl) actionsEl.classList.remove('d-none');
+            
+            // Highlight selected video
+            document.querySelectorAll('.video-list-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            element.classList.add('active');
+            
+            // Preload metadata but don't autoplay
+            player.preload = 'metadata';
+        }
+    }
+    
+    // Function to load more videos
+    function loadMoreVideos() {
+        if (isLoading || !hasMoreVideos) return;
+        
+        isLoading = true;
+        const loadingIndicator = document.getElementById('loading-indicator');
+        if (loadingIndicator) loadingIndicator.classList.remove('d-none');
+        
+        const nextPage = currentPage + 1;
+        
+        fetch(`?page=${nextPage}&format=json`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.videos && data.videos.length > 0) {
+                    const container = document.getElementById('video-list-container');
+                    
+                    data.videos.forEach(video => {
+                        const videoItem = document.createElement('div');
+                        videoItem.className = 'video-list-item';
+                        videoItem.dataset.videoId = video[0];
+                        videoItem.dataset.videoUrl = `https://${data.aws_config.S3_BUCKET_NAME}.s3-${data.aws_config.S3_REGION_NAME}.amazonaws.com/videos/${video[1]}`;
+                        videoItem.dataset.videoTitle = video[2];
+                        videoItem.dataset.videoDescription = video[10] || '';
+                        videoItem.onclick = function() { loadVideo(this); };
+                        
+                        videoItem.innerHTML = `
+                            <div class="video-list-thumb">
+                                <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBwcmVzZXJ2ZUFzcGVjdFJhdGlvPSJ4TWlkWU1pZCI+PHJlY3QgZmlsbD0iIzMzMyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiLz48Y2lyY2xlIGZpbGw9IiM1NTUiIGN4PSI1MCIgY3k9IjUwIiByPSIzMCIvPjxwb2x5Z29uIGZpbGw9IiNhYWEiIHBvaW50cz0iMzUsMzUgNzAsNTAgMzUsNjUiLz48L3N2Zz4="
+                                     data-src="https://${data.aws_config.S3_BUCKET_NAME}.s3-${data.aws_config.S3_REGION_NAME}.amazonaws.com/thumbnails/${video[8]}"
+                                     alt="${video[2]}"
+                                     loading="lazy"
+                                     onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/placeholder.svg') }}'">
+                                <div class="video-duration">${Math.floor(video[5]/60)}:${String(video[5]%60).padStart(2, '0')}</div>
+                            </div>
+                            <div class="video-list-info">
+                                <div class="video-list-title">${video[2]}</div>
+                                <div class="d-flex flex-column">
+                                    <small class="uploader-name" style="color: var(--primary);">${video[4] || 'Anonymous'}</small>
+                                    <div class="d-flex justify-content-between align-items-end mt-1">
+                                        <small>${video[3]}</small>
+                                        <small class="text-muted">${(video[9]/1024/1024).toFixed(1)} MB</small>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        
+                        container.appendChild(videoItem);
+                    });
+                    
+                    // Update current page and check if more videos available
+                    currentPage = nextPage;
+                    hasMoreVideos = nextPage < data.total_pages;
+                    
+                    // Initialize lazy loading for new images
+                    initLazyLoading();
+                } else {
+                    hasMoreVideos = false;
+                }
+                
+                isLoading = false;
+                if (loadingIndicator) loadingIndicator.classList.add('d-none');
+            })
+            .catch(error => {
+                console.error('Error loading more videos:', error);
+                isLoading = false;
+                if (loadingIndicator) loadingIndicator.classList.add('d-none');
+            });
+    }
+    
+    // Initialize lazy loading for thumbnails
+    function initLazyLoading() {
+        const lazyImages = document.querySelectorAll('img[data-src]:not([src^="https://"])');
+        
+        if ('IntersectionObserver' in window) {
+            const imageObserver = new IntersectionObserver((entries, observer) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const image = entry.target;
+                        image.src = image.dataset.src;
+                        observer.unobserve(image);
+                    }
+                });
+            });
+            
+            lazyImages.forEach(image => {
+                imageObserver.observe(image);
+            });
+        } else {
+            // Fallback for browsers without intersection observer
+            lazyImages.forEach(image => {
+                image.src = image.dataset.src;
+            });
+        }
+    }
+    
+    // Initialize copy buttons
+    document.addEventListener('DOMContentLoaded', function() {
+        const copyDiscordBtn = document.getElementById('copy-discord');
+        const copyDirectBtn = document.getElementById('copy-direct');
+        
+        if (copyDiscordBtn) {
+            copyDiscordBtn.addEventListener('click', function() {
+                if (currentVideoUrl && currentVideoTitle) {
+                    const discordFormat = `[${currentVideoTitle}](${currentVideoUrl})`;
+                    copyToClipboard(discordFormat, 'Discord link copied to clipboard');
+                }
+            });
+        }
+        
+        if (copyDirectBtn) {
+            copyDirectBtn.addEventListener('click', function() {
+                if (currentVideoUrl) {
+                    copyToClipboard(currentVideoUrl, 'Video URL copied to clipboard');
+                }
+            });
+        }
+        
+        // Initialize infinite scroll
+        const videoList = document.querySelector('.video-list');
+        if (videoList) {
+            videoList.addEventListener('scroll', function() {
+                if (this.scrollHeight - this.scrollTop - this.clientHeight < 100) {
+                    loadMoreVideos();
+                }
+            });
+        }
+        
+        // Initialize lazy loading for initial thumbnails
+        initLazyLoading();
+        
+        // Check for video selection from localStorage (coming from library page)
+        const selectedVideoId = localStorage.getItem('selectedVideoId');
+        if (selectedVideoId) {
+            const videoElement = document.querySelector(`.video-list-item[data-video-id="${selectedVideoId}"]`);
+            if (videoElement) {
+                loadVideo(videoElement);
+                // Scroll video into view
+                videoElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            // Clear selection after loading
+            localStorage.removeItem('selectedVideoId');
+            localStorage.removeItem('selectedVideoUrl');
+            localStorage.removeItem('selectedVideoTitle');
+            localStorage.removeItem('selectedVideoDescription');
+        }
+    });
+</script>
+{% endblock %}
+
+{% block styles %}
+<style>
+    /* Make active video more prominent */
+    .video-list-item.active {
+        border-color: var(--primary);
+        background-color: rgba(231, 76, 60, 0.15);
+    }
+    
+    /* Improve uploader name styling */
+    .uploader-name {
+        display: block;
+        margin-top: 2px;
+        margin-bottom: 2px;
+    }
+    
+    /* Add Bootstrap CSS variable overrides globally */
+    :root {
+        --bs-btn-color: #c3c3c3 !important;
+    }
+</style>
+{% endblock %} 

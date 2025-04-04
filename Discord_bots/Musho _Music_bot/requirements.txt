@@ -1,0 +1,7 @@
+discord.py
+aiohttp
+yt-dlp
+PyNaCl
+fake-useragent
+playwright
+python-dotenv 

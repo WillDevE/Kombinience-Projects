@@ -1,0 +1,23 @@
+version: '3'
+
+services:
+  embedbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discord-embedbot
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./html_counter.txt:/app/html_counter.txt
+      # Uncomment the line below if you need to modify the template without rebuilding:
+      # - ./video_embed_template.html:/app/video_embed_template.html
+    environment:
+      - TZ=UTC
+      # Use host.docker.internal to access the host machine from within Docker
+      - COBALT_API_URL=http://host.docker.internal:9000
+    env_file:
+      - .env
+    # The extra_hosts setting helps Docker connect to host machine services
+    extra_hosts:
+      - "host.docker.internal:host-gateway" 
