@@ -907,10 +907,10 @@ class MusicBot(commands.Bot):
     @tasks.loop(seconds=30)
     async def presence_loop(self):
         statuses = [
-            "wow I love youtube!",
-            "me when the the uh",
-            "mp3 player",
-            "nothing im a bot",
+            "HELP ME IM STUCK IN AWS",
+            "Im not a bot, I am a human",
+            "Lebron lying face down so funny bruh",
+            "11.219464, 123.732551"
         ]
         for status in itertools.cycle(statuses):
             await self.change_presence(activity=discord.CustomActivity(name=status))

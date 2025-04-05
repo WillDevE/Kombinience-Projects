@@ -14,4 +14,4 @@ AWS_CONFIG = {
 # Upload configurations
 UPLOAD_FOLDER = "static/uploads"  # Kept for thumbnails
 ALLOWED_EXTENSIONS = {"mp4", "mov", "webm"}  # Common video extensions
-MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 200MB max file size
+MAX_CONTENT_LENGTH = 1000 * 1024 * 1024  # 1000MB (1GB) max file size

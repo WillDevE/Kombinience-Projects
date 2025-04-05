@@ -45,7 +45,7 @@ DATABASE = "videos.db"
 
 # Upload configurations
 UPLOAD_FOLDER = "static/uploads"  # Changed to uploads for clarity
-ALLOWED_EXTENSIONS = {"mp4", "mov", "webm"}  # Common video extensions
+ALLOWED_EXTENSIONS = {"mp4"}  # Only allow mp4 files
 
 # Discord OAuth
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
@@ -611,8 +611,15 @@ def is_valid_video(filepath):
     try:
         probe = ffmpeg.probe(filepath)
         # Check if file has at least one video stream
-        return any(stream["codec_type"] == "video" for stream in probe["streams"])
-    except:
+        result = any(stream["codec_type"] == "video" for stream in probe["streams"])
+        if not result:
+            print(f"No video streams found in {filepath}")
+        else:
+            video_streams = [stream for stream in probe["streams"] if stream["codec_type"] == "video"]
+            print(f"Found {len(video_streams)} video streams. First stream codec: {video_streams[0].get('codec_name', 'unknown')}")
+        return result
+    except Exception as e:
+        print(f"Error validating video with ffmpeg: {str(e)}")
         return False
 
 def get_db():
@@ -761,7 +768,11 @@ def validate_file_type(file_path):
     """Validate file type using libmagic"""
     mime = magic.Magic(mime=True)
     file_type = mime.from_file(file_path)
-    return file_type in app.config['ALLOWED_MIME_TYPES']
+    print(f"Detected MIME type: {file_type}")  # Debug print
+    is_valid = file_type in app.config['ALLOWED_MIME_TYPES']
+    if not is_valid:
+        print(f"Invalid MIME type: {file_type}, allowed types: {app.config['ALLOWED_MIME_TYPES']}")
+    return is_valid
 
 def secure_filename_with_hash(filename):
     """Generate a secure filename with hash to prevent duplicates"""

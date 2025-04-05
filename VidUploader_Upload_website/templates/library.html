@@ -32,9 +32,6 @@
                            data-video-description="{{ video[10] | default('') }}">
                             <div class="video-title">{{ video[2] }}</div>
                         </a>
-                        {% if video[10] %}
-                        <div class="video-description">{{ video[10] }}</div>
-                        {% endif %}
                         <div class="video-meta">
                             <span>{{ video[3] }}</span> • 
                             <span>{{ (video[9]/1024/1024)|round(1) }} MB</span>
@@ -289,4 +286,4 @@
         }
     }
 </style>
-{% endblock %} 
+{% endblock %}
