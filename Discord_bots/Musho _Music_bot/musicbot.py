@@ -7,6 +7,8 @@ from collections import defaultdict
 from typing import Optional, Tuple, List, Dict, Union
 import itertools
 import re
+import subprocess
+import urllib.parse
 
 import discord
 import aiohttp
@@ -43,6 +45,8 @@ MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY = 1
 DEFAULT_VOLUME = float(os.getenv("DEFAULT_VOLUME", "0.2"))
 MAX_SONG_LENGTH = int(os.getenv("MAX_SONG_LENGTH", "7200"))  # 120 minutes in seconds
+# Proxy URL (if needed)
+PROXY_URL = os.getenv("PROXY_URL")
 
 # Spotify Configuration
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -82,11 +86,36 @@ class SpotifyClient:
                 client_secret=SPOTIFY_CLIENT_SECRET
             ))
             
-            # Set up environment variables for spotify-dlp
-            os.environ["SPOTIFY_DLP_CLIENT_ID"] = SPOTIFY_CLIENT_ID
-            os.environ["SPOTIFY_DLP_CLIENT_SECRET"] = SPOTIFY_CLIENT_SECRET
-            
             logger.info("Spotify client initialized successfully.")
+            
+    # Define a Spotify Item class similar to spotify-dlp implementation
+    class SpotifyItem:
+        def __init__(self, item={}):
+            self.id = item.get("id")
+            self.type = item.get("type")
+            self.title = item.get("name")
+            self.index = 0
+            
+            if self.type == "track":
+                self.authors = [author["name"] for author in item["artists"]]
+                self.album = item["album"]["name"] if "album" in item else None
+                self.date = item["album"]["release_date"] if "album" in item and "release_date" in item["album"] else None
+                self.cover = item["album"]["images"][0]["url"] if "album" in item and "images" in item["album"] and item["album"]["images"] else None
+                self.entry = item["track_number"] if "track_number" in item else None
+            else:
+                self.authors = []
+                self.album = None
+                self.date = None
+                self.cover = None
+                self.entry = None
+        
+        @property
+        def url(self):
+            return f"https://open.spotify.com/{self.type}/{self.id}"
+            
+        @property
+        def keywords(self):
+            return urllib.parse.quote_plus(f"{self.title} {' '.join(self.authors)}")
 
     def is_available(self) -> bool:
         """Check if Spotify client is available for use."""
@@ -138,18 +167,77 @@ class SpotifyClient:
         except Exception as e:
             logger.error(f"Error getting track info from Spotify: {e}")
             return None
+            
+    def parse_url(self, url: str) -> tuple[str, str]:
+        """Parse a Spotify URL to extract the type and ID."""
+        try:
+            return re.search(r"(?:open\.spotify\.com/|spotify:)([a-z]+)(?:/|:)(\w+)", url).groups()
+        except AttributeError:
+            logger.error(f"Invalid Spotify URL: {url}")
+            return None, None
+            
+    def items_by_url(self, url: str) -> list:
+        """Get Spotify items based on URL type (track, album, playlist)."""
+        item_type, item_id = self.parse_url(url)
+        if not item_type or not item_id:
+            return []
+            
+        items = []
+        
+        try:
+            match item_type:
+                case "track":
+                    result = self.client.track(item_id)
+                    items.append(self.SpotifyItem(result))
+                    
+                case "album":
+                    album = self.client.album(item_id)
+                    album_tracks = self.client.album_tracks(item_id)
+                    for item in album_tracks["items"]:
+                        # Include album info with each track
+                        item["album"] = {
+                            "name": album["name"],
+                            "release_date": album.get("release_date"),
+                            "images": album.get("images", [])
+                        }
+                        items.append(self.SpotifyItem(item))
+                        
+                case "playlist":
+                    results = []
+                    playlist_tracks = self.client.playlist_tracks(item_id)
+                    results.extend([item['track'] for item in playlist_tracks['items'] if item['track']])
+                    
+                    # Handle pagination for playlists with more than 100 tracks
+                    while playlist_tracks['next']:
+                        playlist_tracks = self.client.next(playlist_tracks)
+                        results.extend([item['track'] for item in playlist_tracks['items'] if item['track']])
+                        
+                    for item in results:
+                        items.append(self.SpotifyItem(item))
+                        
+                case _:
+                    logger.warning(f"Unsupported Spotify item type: {item_type}")
+            
+            # Add index to each item
+            for index, item in enumerate(items, start=1):
+                item.index = index
+                
+            return items
+        except Exception as e:
+            logger.error(f"Error fetching Spotify items for {url}: {e}")
+            return []
 
     async def download_track(self, url: str) -> Optional[Song]:
-        """Download a track from Spotify using spotify-dlp."""
+        """Download a track from Spotify using direct YT-DLP integration."""
         if not self.is_available():
             return None
             
         try:
-            # Create a unique download directory for this track
+            # Create a unique download directory for this track with proper permissions
             download_dir = os.path.join(os.getcwd(), "downloads", "spotify")
             os.makedirs(download_dir, exist_ok=True)
             
-            # Get track metadata using spotipy for better details
+            # Get track metadata using spotipy
             track_id = self.get_track_id(url)
             if not track_id:
                 logger.error(f"Could not extract track ID from Spotify URL: {url}")
@@ -159,6 +247,9 @@ class SpotifyClient:
             if not track_info:
                 logger.error(f"Could not get track info from Spotify: {url}")
                 return None
+            
+            # Create Spotify item from track info
+            spotify_item = self.SpotifyItem(track_info)
             
             # Prepare track details
             track_title = track_info['name']
@@ -176,61 +267,94 @@ class SpotifyClient:
                                                            .replace('?', '_').replace('"', '_') \
                                                            .replace('<', '_').replace('>', '_') \
                                                            .replace('|', '_')
+            output_filepath = os.path.join(download_dir, f"{safe_filename}.mp3")
             
-            output_path = os.path.join(download_dir, f"{safe_filename}.mp3")
+            # The key insight from spotify-dlp: use YouTube Music search with the track details
+            yt_search_url = f"https://music.youtube.com/search?q={spotify_item.keywords}#songs"
+            logger.info(f"Searching YouTube Music for: {track_artist} - {track_title}")
             
-            # Run spotify-dlp to download the track
-            logger.info(f"Downloading track from Spotify: {track_artist} - {track_title}")
+            # Determine which cookies file to use
+            cookies_file = None
+            if os.path.exists(YOUTUBE_COOKIES):
+                try:
+                    # Make a writable copy of the cookies file
+                    shutil.copy2(YOUTUBE_COOKIES, YOUTUBE_COOKIES_WRITABLE)
+                    cookies_file = YOUTUBE_COOKIES_WRITABLE
+                    logger.info(f"Created writable copy of YouTube cookies at: {cookies_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to create writable cookies copy: {e}")
             
-            # Use spotify-dlp in a subprocess
-            cmd = [
-                "spotify-dlp",
-                url,
-                "-o", download_dir,
-                "-c", "mp3",
-                "-m",  # Include metadata
-                "-y"   # Skip confirmation
-            ]
+            # Configure yt-dlp with our existing setup, but targeting the output file
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': os.path.join(download_dir, f"{safe_filename}.%(ext)s"),
+                'quiet': False,
+                'no_warnings': True,
+                'extract_flat': False,
+                'noplaylist': True,
+                'playlist_items': '1',  # Only download the first search result
+                'format_sort': ['acodec:mp3:128'],
+                'postprocessor_args': ['-ar', '44100'],
+                'prefer_ffmpeg': True,
+            }
             
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            # Add proxy configuration if set in environment variables
+            if PROXY_URL:
+                logger.info(f"Using proxy for Spotify download: {PROXY_URL}")
+                ydl_opts['proxy'] = PROXY_URL
             
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode != 0:
-                logger.error(f"spotify-dlp failed: {stderr.decode()}")
-                return None
+            # Add cookies file only if it exists
+            if cookies_file and os.path.exists(cookies_file):
+                logger.info(f"Using YouTube cookies file for Spotify download: {cookies_file}")
+                ydl_opts['cookiefile'] = cookies_file
                 
-            # Find the downloaded file (it might have a slightly different name)
-            downloaded_files = []
-            for file in os.listdir(download_dir):
-                if file.endswith(".mp3") and (track_title.lower() in file.lower() or track_artist.lower() in file.lower()):
-                    downloaded_files.append(os.path.join(download_dir, file))
-            
-            if not downloaded_files:
-                logger.error("spotify-dlp did not produce an output file")
-                return None
+            # Execute the download
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                logger.info(f"Downloading Spotify track via YouTube Music: {track_artist} - {track_title}")
+                info = await asyncio.get_event_loop().run_in_executor(
+                    ThreadPoolExecutor(1),
+                    lambda: ydl.extract_info(yt_search_url, download=True)
+                )
                 
-            # Use the most recently created file as it's likely the one we just downloaded
-            downloaded_files.sort(key=os.path.getmtime, reverse=True)
-            actual_output_path = downloaded_files[0]
-            
-            # Create a Song object with the downloaded track
-            return Song(
-                filename=actual_output_path,
-                title=f"{track_artist} - {track_title}",
-                duration=duration_str,
-                url=url,
-                thumbnail=thumbnail
-            )
-            
+                if not info:
+                    logger.error("No info returned from yt-dlp for Spotify track")
+                    return None
+                
+                # Get the actual filename where the file was downloaded
+                entries = info.get('entries', [])
+                if not entries:
+                    logger.error("No entries found in YouTube Music search results")
+                    return None
+                    
+                filename = ydl.prepare_filename(entries[0])
+                # Adjust filename for mp3 extension since we're extracting audio
+                filename = filename.rsplit(".", 1)[0] + ".mp3"
+                
+                # Check if file exists
+                if not os.path.exists(filename):
+                    logger.error(f"Downloaded file not found at expected path: {filename}")
+                    return None
+                
+                logger.info(f"Successfully downloaded Spotify track to: {filename}")
+                
+                # Create a Song object with the track's metadata
+                return Song(
+                    filename=filename,
+                    title=f"{track_artist} - {track_title}",
+                    duration=duration_str,
+                    url=url,
+                    thumbnail=thumbnail
+                )
+                
         except Exception as e:
             logger.error(f"Error downloading track from Spotify: {e}", exc_info=True)
             return None
-            
+
     async def get_playlist_tracks(self, playlist_id: str) -> List[Dict]:
         """Get tracks in a playlist."""
         if not self.is_available():
@@ -275,7 +399,7 @@ class SpotifyClient:
             return []
             
         try:
-            # Create a unique download directory for this playlist
+            # Create a unique download directory for this playlist with proper permissions
             download_dir = os.path.join(os.getcwd(), "downloads", "spotify", f"playlist_{playlist_id}")
             os.makedirs(download_dir, exist_ok=True)
             
@@ -286,125 +410,43 @@ class SpotifyClient:
             playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
             
             # Calculate pagination
-            start_index = (page - 1) * max_tracks + 1
+            start_index = (page - 1) * max_tracks
             end_index = page * max_tracks
             
-            # First get all tracks metadata from the playlist
-            all_playlist_tracks = await self.get_playlist_tracks(playlist_id)
-            if not all_playlist_tracks:
+            # Get tracks using the items_by_url method
+            spotify_items = self.items_by_url(playlist_url)
+            if not spotify_items:
                 logger.error(f"Could not fetch tracks for playlist: {playlist_id}")
                 return []
                 
             # Apply pagination
-            start_idx = (page - 1) * max_tracks
-            end_idx = min(start_idx + max_tracks, len(all_playlist_tracks))
-            playlist_tracks = all_playlist_tracks[start_idx:end_idx]
+            spotify_items = spotify_items[start_index:end_index]
             
-            if not playlist_tracks:
+            if not spotify_items:
                 logger.error(f"No tracks found for playlist page {page}")
                 return []
             
-            logger.info(f"Processing {len(playlist_tracks)} tracks from playlist '{playlist_name}' (page {page})")
+            logger.info(f"Processing {len(spotify_items)} tracks from playlist '{playlist_name}' (page {page})")
             
-            # Use spotify-dlp to download tracks for this page
-            cmd = [
-                "spotify-dlp",
-                playlist_url,
-                "-o", download_dir,
-                "-c", "mp3",
-                "-m",  # Include metadata
-                "-y",  # Skip confirmation
-                "-l", f"{start_index}:{end_index}"  # Limit to current page
-            ]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode != 0:
-                logger.error(f"spotify-dlp failed: {stderr.decode()}")
-                return []
-            
-            # Map of track IDs to metadata to preserve proper information
-            track_metadata = {}
-            for track in playlist_tracks:
-                if track and 'id' in track:
-                    track_metadata[track['id']] = {
-                        'name': track.get('name', 'Unknown'),
-                        'artist': track.get('artists', [{}])[0].get('name', 'Unknown Artist'),
-                        'album': track.get('album', {}).get('name', 'Unknown Album'),
-                        'duration_ms': track.get('duration_ms', 0),
-                        'image': track.get('album', {}).get('images', [{}])[0].get('url') if track.get('album', {}).get('images') else None
-                    }
-            
-            # Find all downloaded MP3 files
+            # Download each track individually
             downloaded_songs = []
-            for file in os.listdir(download_dir):
-                if file.endswith(".mp3"):
-                    file_path = os.path.join(download_dir, file)
-                    
-                    # Try to match with track metadata using filename
-                    matched_track = None
-                    file_name_lower = file.lower().replace(".mp3", "")
-                    
-                    for track_id, metadata in track_metadata.items():
-                        track_name_lower = metadata['name'].lower()
-                        artist_name_lower = metadata['artist'].lower()
-                        
-                        # Check if track name and artist are in the filename
-                        if track_name_lower in file_name_lower and artist_name_lower in file_name_lower:
-                            matched_track = metadata
-                            # Remove this track from the map to avoid duplicates
-                            track_metadata.pop(track_id, None)
-                            break
-                    
-                    # If we found a match, use its metadata
-                    if matched_track:
-                        duration_ms = matched_track.get('duration_ms', 0)
-                        minutes = int((duration_ms / 1000) // 60)
-                        seconds = int((duration_ms / 1000) % 60)
-                        duration_str = f"{minutes}:{seconds:02d}"
-                        
-                        song = Song(
-                            filename=file_path,
-                            title=f"{matched_track['artist']} - {matched_track['name']}",
-                            duration=duration_str,
-                            url=playlist_url,
-                            thumbnail=matched_track.get('image')
-                        )
-                    else:
-                        # Fall back to parsing filename if no match
-                        parts = file.replace(".mp3", "").split(" - ", 1)
-                        if len(parts) == 2:
-                            artist, title = parts
-                        else:
-                            artist, title = "Unknown Artist", parts[0]
-                        
-                        song = Song(
-                            filename=file_path,
-                            title=f"{artist} - {title}",
-                            duration="Unknown",
-                            url=playlist_url,
-                            thumbnail=None
-                        )
-                    
-                    downloaded_songs.append(song)
+            for item in spotify_items:
+                try:
+                    song = await self.download_track(item.url)
+                    if song:
+                        # Add playlist info to song
+                        song.playlist_info = {
+                            'name': playlist_name,
+                            'total_tracks': playlist_total,
+                            'current_page': page,
+                            'tracks_per_page': max_tracks
+                        }
+                        downloaded_songs.append(song)
+                except Exception as e:
+                    logger.error(f"Error downloading playlist track {item.title}: {e}")
+                    continue
             
             logger.info(f"Downloaded {len(downloaded_songs)} songs from playlist: {playlist_name}")
-            
-            # Add playlist info to return object
-            for song in downloaded_songs:
-                song.playlist_info = {
-                    'name': playlist_name,
-                    'total_tracks': playlist_total,
-                    'current_page': page,
-                    'tracks_per_page': max_tracks
-                }
-                
             return downloaded_songs
             
         except Exception as e:
@@ -417,7 +459,7 @@ class SpotifyClient:
             return []
             
         try:
-            # Create a unique download directory for this album
+            # Create a unique download directory for this album with proper permissions
             download_dir = os.path.join(os.getcwd(), "downloads", "spotify", f"album_{album_id}")
             os.makedirs(download_dir, exist_ok=True)
             
@@ -426,139 +468,56 @@ class SpotifyClient:
             album_name = album_info['name']
             album_artist = album_info['artists'][0]['name']
             album_total = album_info.get('total_tracks', 0)
-            
             album_url = f"https://open.spotify.com/album/{album_id}"
             
             # Calculate pagination
-            start_index = (page - 1) * max_tracks + 1
+            start_index = (page - 1) * max_tracks
             end_index = page * max_tracks
             
-            # First get all tracks metadata from the album
-            all_album_tracks = await self.get_album_tracks(album_id)
-            if not all_album_tracks:
+            # Get tracks using the items_by_url method
+            spotify_items = self.items_by_url(album_url)
+            if not spotify_items:
                 logger.error(f"Could not fetch tracks for album: {album_id}")
                 return []
                 
             # Apply pagination
-            start_idx = (page - 1) * max_tracks
-            end_idx = min(start_idx + max_tracks, len(all_album_tracks))
-            album_tracks = all_album_tracks[start_idx:end_idx]
+            spotify_items = spotify_items[start_index:end_index]
             
-            if not album_tracks:
+            if not spotify_items:
                 logger.error(f"No tracks found for album page {page}")
                 return []
             
-            logger.info(f"Processing {len(album_tracks)} tracks from album '{album_name}' (page {page})")
+            logger.info(f"Processing {len(spotify_items)} tracks from album '{album_name}' (page {page})")
             
-            # Use spotify-dlp to download tracks for this page
-            cmd = [
-                "spotify-dlp",
-                album_url,
-                "-o", download_dir,
-                "-c", "mp3",
-                "-m",  # Include metadata
-                "-y",  # Skip confirmation
-                "-l", f"{start_index}:{end_index}"  # Limit to current page
-            ]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode != 0:
-                logger.error(f"spotify-dlp failed: {stderr.decode()}")
-                return []
-                
             # Get album images for thumbnail
             album_image = None
             if album_info.get('images') and len(album_info['images']) > 0:
                 album_image = album_info['images'][0].get('url')
-                
-            # Map of track positions to metadata to preserve proper information
-            track_metadata = {}
-            for track in album_tracks:
-                if track:
-                    # Use track position as key in an album (more reliable than trying to match by name)
-                    position = track.get('track_number', 0)
-                    track_metadata[position] = {
-                        'name': track.get('name', 'Unknown'),
-                        'artist': album_artist,  # Use album artist for consistency
-                        'album': album_name,
-                        'duration_ms': track.get('duration_ms', 0),
-                        'disc_number': track.get('disc_number', 1),
-                        'track_number': position,
-                        'image': album_image
-                    }
             
-            # Find all downloaded MP3 files
+            # Download each track individually
             downloaded_songs = []
-            for file in os.listdir(download_dir):
-                if file.endswith(".mp3"):
-                    file_path = os.path.join(download_dir, file)
-                    
-                    # Try to match with track metadata using filename
-                    matched_track = None
-                    file_name_lower = file.lower().replace(".mp3", "")
-                    
-                    # First try to match directly with track metadata
-                    for position, metadata in track_metadata.items():
-                        track_name_lower = metadata['name'].lower()
-                        
-                        # Check if track name is in the filename (artist should always match in an album)
-                        if track_name_lower in file_name_lower:
-                            matched_track = metadata
-                            # Remove this track from the map to avoid duplicates
-                            track_metadata.pop(position, None)
-                            break
-                    
-                    # If we found a match, use its metadata
-                    if matched_track:
-                        duration_ms = matched_track.get('duration_ms', 0)
-                        minutes = int((duration_ms / 1000) // 60)
-                        seconds = int((duration_ms / 1000) % 60)
-                        duration_str = f"{minutes}:{seconds:02d}"
-                        
-                        song = Song(
-                            filename=file_path,
-                            title=f"{matched_track['artist']} - {matched_track['name']}",
-                            duration=duration_str,
-                            url=album_url,
-                            thumbnail=matched_track.get('image')
-                        )
-                    else:
-                        # Fall back to parsing filename if no match
-                        parts = file.replace(".mp3", "").split(" - ", 1)
-                        if len(parts) == 2:
-                            artist, title = parts
-                        else:
-                            artist, title = album_artist, parts[0]
-                        
-                        song = Song(
-                            filename=file_path,
-                            title=f"{artist} - {title}",
-                            duration="Unknown",
-                            url=album_url,
-                            thumbnail=album_image  # At least use the album image
-                        )
-                    
-                    downloaded_songs.append(song)
+            for item in spotify_items:
+                try:
+                    song = await self.download_track(item.url)
+                    if song:
+                        # If thumbnail is missing, use album image
+                        if not song.thumbnail and album_image:
+                            song.thumbnail = album_image
+                            
+                        # Add album info to song
+                        song.playlist_info = {
+                            'name': f"{album_artist} - {album_name}",
+                            'total_tracks': album_total,
+                            'current_page': page,
+                            'tracks_per_page': max_tracks,
+                            'is_album': True
+                        }
+                        downloaded_songs.append(song)
+                except Exception as e:
+                    logger.error(f"Error downloading album track {item.title}: {e}")
+                    continue
             
             logger.info(f"Downloaded {len(downloaded_songs)} songs from album: {album_artist} - {album_name}")
-            
-            # Add album info to return object
-            for song in downloaded_songs:
-                song.playlist_info = {
-                    'name': f"{album_artist} - {album_name}",
-                    'total_tracks': album_total,
-                    'current_page': page,
-                    'tracks_per_page': max_tracks,
-                    'is_album': True
-                }
-                
             return downloaded_songs
             
         except Exception as e:
@@ -678,15 +637,31 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.voice_states = True
+        intents.members = True
+        intents.guilds = True
         
         super().__init__(command_prefix='/', intents=intents)
         self.queue_manager = QueueManager()
         self.spotify_client = SpotifyClient()
         self.tree.on_error = self.on_tree_error
         
+        # Set up download directories with proper permissions
+        try:
+            downloads_dir = os.path.join(os.getcwd(), "downloads")
+            spotify_dir = os.path.join(downloads_dir, "spotify")
+            
+            # Create main directories if they don't exist
+            os.makedirs(downloads_dir, exist_ok=True)
+            os.makedirs(spotify_dir, exist_ok=True)
+            
+            logger.info(f"Download directories set up at {downloads_dir}")
+            
+        except Exception as e:
+            logger.error(f"Error setting up download directories: {e}")
+        
         # Dashboard settings
         self.dashboard_enabled = True
-        self.dashboard_port = int(os.getenv("DASHBOARD_PORT", "80"))
+        self.dashboard_port = int(os.getenv("DASHBOARD_PORT", "8080"))
         self.dashboard_url_prefix = os.getenv("DASHBOARD_URL_PREFIX", "/musho")
         self.dashboard_thread = None
 
@@ -728,6 +703,11 @@ class MusicBot(commands.Bot):
         # Start web dashboard if enabled
         if self.dashboard_enabled:
             try:
+                logger.info(f"Initializing dashboard on port {self.dashboard_port} with URL prefix {self.dashboard_url_prefix}")
+                
+                # Set environment variable to force Flask to bind to all interfaces
+                os.environ["FLASK_RUN_HOST"] = "0.0.0.0"
+                
                 # Register this bot instance with the dashboard
                 register_bot(self)
                 
@@ -738,9 +718,14 @@ class MusicBot(commands.Bot):
                     url_prefix=self.dashboard_url_prefix,
                     debug=False
                 )
-                logger.info(f"Web dashboard started on http://localhost:{self.dashboard_port}{self.dashboard_url_prefix}/")
+                
+                if self.dashboard_thread:
+                    logger.info(f"Web dashboard started successfully on http://0.0.0.0:{self.dashboard_port}{self.dashboard_url_prefix}/")
+                else:
+                    logger.error("Failed to start dashboard thread")
+                    self.dashboard_enabled = False
             except Exception as e:
-                logger.error(f"Failed to start dashboard: {e}")
+                logger.error(f"Failed to start dashboard: {e}", exc_info=True)
                 self.dashboard_enabled = False
             
         await self.change_presence(activity=discord.Game(name="your dog music fr"))
@@ -1486,6 +1471,13 @@ class MusicBot(commands.Bot):
                 'postprocessor_args': ['-ar', '44100'],
                 'prefer_ffmpeg': True,
             }
+            
+            # Add proxy configuration if set in environment variables
+            # This allows the bot to connect through a proxy server for YouTube downloads
+            # Useful for environments where direct connections are blocked or rate-limited
+            if PROXY_URL:
+                logger.info(f"Using proxy for download: {PROXY_URL}")
+                ydl_opts['proxy'] = PROXY_URL
             
             # Add cookies file only if it exists
             if cookies_file and os.path.exists(cookies_file):

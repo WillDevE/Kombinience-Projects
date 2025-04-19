@@ -11,18 +11,38 @@ app = Flask(__name__,
     template_folder="templates"
 )
 
-# Set URL prefix for all routes to /musho
-app.config['APPLICATION_ROOT'] = '/musho'
-# Make sure URL generation works with the prefix
-app.config['PREFERRED_URL_SCHEME'] = 'http'
+# Set URL prefix for all routes
+URL_PREFIX = '/musho'
+
+# Configure WSGI application for more reliable performance
+app.config['PROPAGATE_EXCEPTIONS'] = True
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
+
+# Add a direct root route for debugging
+@app.route('/')
+def root_debug():
+    """Root-level route for debugging Docker network connectivity"""
+    return "Dashboard root debugging route is working", 200
+
+# Register error handler for exceptions
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Handle all unhandled exceptions"""
+    logger.error(f"Unhandled exception in Flask app: {str(e)}", exc_info=True)
+    return jsonify({"error": "Internal server error", "message": str(e)}), 500
+
+# Add a direct healthcheck route for debugging without URL prefix
+@app.route('/healthcheck')
+def direct_healthcheck():
+    """Direct healthcheck without URL prefix for debugging Docker networking"""
+    return "Dashboard server direct healthcheck: OK", 200
 
 # Make sure these functions are properly exposed for import
 __all__ = ['register_bot', 'record_song_played', 'start_dashboard']
 
-# Configure logging
+# Configure logging with a simpler format for troubleshooting
 logging.basicConfig(
-    filename='logs/dashboard.log',
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -505,12 +525,73 @@ def load_dashboard_data():
         logger.error(f"Error loading dashboard data: {e}")
 
 # Routes
-@app.route('/')
-def home():
-    # Just send the initial data without full recalculation
-    return render_template('dashboard.html', data=dashboard_data)
+@app.route(f'{URL_PREFIX}/ping')
+def ping():
+    """Simple test endpoint to verify the server is working"""
+    return jsonify({
+        "status": "ok",
+        "message": "Dashboard is running",
+        "timestamp": datetime.now().isoformat()
+    })
 
-@app.route('/api/stats')
+# Route for static files
+@app.route(f'{URL_PREFIX}/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files with the correct URL prefix"""
+    try:
+        logger.debug(f"Serving static file: {filename}")
+        return app.send_static_file(filename)
+    except Exception as e:
+        logger.error(f"Error serving static file {filename}: {e}")
+        return f"Error serving static file: {str(e)}", 500
+
+# Handle root-level static file requests
+@app.route('/favicon.ico')
+def favicon():
+    """Serve the favicon"""
+    try:
+        logger.debug("Serving favicon.ico")
+        return app.send_static_file('favicon.ico')
+    except Exception as e:
+        logger.error(f"Error serving favicon.ico: {e}")
+        # Return a 204 No Content instead of an error for favicon
+        return '', 204
+
+# Handle other common root static files
+@app.route('/<path:filename>')
+def serve_root_static(filename):
+    """Serve certain files from the root URL path (no prefix)"""
+    try:
+        # Only allow common web files at the root
+        allowed_root_files = [
+            'robots.txt',
+            'sitemap.xml',
+            'manifest.json',
+            'sw.js',  # Service worker
+            'browserconfig.xml'
+        ]
+        if filename in allowed_root_files:
+            logger.debug(f"Serving root static file: {filename}")
+            return app.send_static_file(filename)
+        else:
+            logger.debug(f"Redirecting non-static file request: {filename}")
+            return redirect(f"{URL_PREFIX}/")
+    except Exception as e:
+        logger.error(f"Error serving root static file {filename}: {e}")
+        # Return a 204 No Content for better browser handling
+        return '', 204
+
+@app.route(f'{URL_PREFIX}/')
+def home():
+    """Render the home dashboard"""
+    try:
+        # Just send the initial data without full recalculation
+        return render_template('dashboard.html', data=dashboard_data)
+    except Exception as e:
+        logger.error(f"Error rendering home template: {e}", exc_info=True)
+        return jsonify({"error": "Template rendering error", "details": str(e)}), 500
+
+@app.route(f'{URL_PREFIX}/api/stats')
 def get_stats():
     # Check if client provided last-updated timestamp
     client_last_updated = request.args.get('last_updated', 0, type=int)
@@ -547,7 +628,7 @@ def get_stats():
         # No changes, return minimal response
         return jsonify({'last_updated': server_last_updated, 'no_changes': True})
 
-@app.route('/api/guilds')
+@app.route(f'{URL_PREFIX}/api/guilds')
 def get_guilds():
     # Check if client provided last-updated timestamp
     client_last_updated = request.args.get('last_updated', 0, type=int)
@@ -562,13 +643,13 @@ def get_guilds():
         # No changes
         return jsonify({'no_changes': True})
 
-@app.route('/guild/<guild_id>')
+@app.route(f'{URL_PREFIX}/guild/<guild_id>')
 def guild_detail(guild_id):
     # Only update stats if this guild's data has changed
     guild_data = dashboard_data['guild_stats'].get(guild_id, {})
     return render_template('guild.html', guild=guild_data, guild_id=guild_id)
 
-@app.route('/api/history')
+@app.route(f'{URL_PREFIX}/api/history')
 def get_history():
     # Check if client provided last-updated timestamp
     client_last_updated = request.args.get('last_updated', 0, type=int)
@@ -591,7 +672,7 @@ def auto_save_task():
         save_dashboard_data()
 
 # Start the dashboard server
-def start_dashboard(host='0.0.0.0', port=80, url_prefix='/musho', debug=False):
+def start_dashboard(host='0.0.0.0', port=8080, url_prefix='/musho', debug=False):
     """Start the dashboard web server in a separate thread"""
     # First load any saved data
     load_dashboard_data()
@@ -603,30 +684,28 @@ def start_dashboard(host='0.0.0.0', port=80, url_prefix='/musho', debug=False):
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
     
-    if debug:
-        # In debug mode, run in the main thread
-        app.run(host=host, port=port, debug=debug)
-    else:
-        # In production, run in a separate thread
-        from werkzeug.middleware.dispatcher import DispatcherMiddleware
-        from werkzeug.serving import run_simple
+    try:
+        # Log the network binding configuration
+        logger.info(f"Flask app configured to bind to: {host}:{port}")
         
-        # Create application with URL prefix
-        application = DispatcherMiddleware(
-            app=lambda environ, start_response: start_response('404 Not Found', [('Content-Type', 'text/plain')]),
-            mounts={url_prefix: app}
-        )
-            
+        # Simplify by running Flask directly without middleware
         def run_app():
-            # Note: In production, we expect this to be run with sudo
-            run_simple(hostname=host, port=port, application=application, use_reloader=False)
+            try:
+                logger.info(f"Starting dashboard server on 0.0.0.0:{port} with routes at {url_prefix}")
+                # Force app to bind to 0.0.0.0 - this is the key fix for "Connection reset by peer"
+                app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+            except Exception as e:
+                logger.error(f"Error starting dashboard server: {e}", exc_info=True)
             
         dashboard_thread = threading.Thread(target=run_app, daemon=True)
         dashboard_thread.start()
-        logger.info(f"Dashboard started on http://{host}:{port}{url_prefix}/")
+        logger.info(f"Dashboard started on http://0.0.0.0:{port}{url_prefix}/")
         
         return dashboard_thread
+    except Exception as e:
+        logger.error(f"Failed to start dashboard: {e}", exc_info=True)
+        return None
 
-# Run the app directly for testing
+# For testing directly
 if __name__ == '__main__':
-    start_dashboard(debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)

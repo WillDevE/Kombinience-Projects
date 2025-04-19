@@ -96,7 +96,7 @@ function formatTimestamp(timestamp) {
 // Fetch latest data via API
 function fetchLatestData() {
     // Include the last updated timestamp to avoid unnecessary data transfer
-    fetch(`/api/stats?last_updated=${lastUpdatedTimestamp}`)
+    fetch(`/musho/api/stats?last_updated=${lastUpdatedTimestamp}`)
         .then(response => response.json())
         .then(data => {
             // Check if there are any changes

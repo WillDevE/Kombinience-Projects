@@ -12,5 +12,10 @@ ffmpeg-python>=0.2.0
 spotipy>=2.22.0
 spotify-dlp==2.2.0  # Specific version required
 
+# Dashboard requirements
+Flask>=2.0.0
+Werkzeug>=2.0.0
+
 # Utilities
-fake-useragent>=0.1.11 
+fake-useragent>=0.1.11
+requests>=2.28.0 
