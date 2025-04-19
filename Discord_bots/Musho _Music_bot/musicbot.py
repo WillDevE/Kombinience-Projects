@@ -19,6 +19,9 @@ from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
+# Import dashboard module
+from dashboard import register_bot, record_song_played, start_dashboard
+
 # Load environment variables
 load_dotenv()
 
@@ -38,7 +41,7 @@ YOUTUBE_COOKIES = os.path.join(os.path.dirname(__file__), "youtube_cookies.txt")
 YOUTUBE_COOKIES_WRITABLE = os.path.join(os.path.dirname(__file__), "downloads", "yt_cookies_writable.txt")
 MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY = 1
-DEFAULT_VOLUME = float(os.getenv("DEFAULT_VOLUME", "1.1"))
+DEFAULT_VOLUME = float(os.getenv("DEFAULT_VOLUME", "0.2"))
 MAX_SONG_LENGTH = int(os.getenv("MAX_SONG_LENGTH", "7200"))  # 120 minutes in seconds
 
 # Spotify Configuration
@@ -46,10 +49,12 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 
-# Spotify URL patterns
-SPOTIFY_TRACK_URL_PATTERN = r'https?://open\.spotify\.com/track/([a-zA-Z0-9]+)'
-SPOTIFY_PLAYLIST_URL_PATTERN = r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)'
-SPOTIFY_ALBUM_URL_PATTERN = r'https?://open\.spotify\.com/album/([a-zA-Z0-9]+)'
+# Spotify URL patterns - improved to handle all possible Spotify URL formats
+SPOTIFY_TRACK_URL_PATTERN = r'https?://open\.spotify\.com/track/([a-zA-Z0-9]+)(\?.*)?'
+SPOTIFY_PLAYLIST_URL_PATTERN = r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)(\?.*)?'
+SPOTIFY_ALBUM_URL_PATTERN = r'https?://open\.spotify\.com/album/([a-zA-Z0-9]+)(\?.*)?'
+# Also handle shortened URLs
+SPOTIFY_SHORT_URL_PATTERN = r'https?://spotify\.link/([a-zA-Z0-9]+)'
 
 class Song:
     def __init__(self, filename: str, title: str, duration: str, url: str, thumbnail: str):
@@ -678,6 +683,11 @@ class MusicBot(commands.Bot):
         self.queue_manager = QueueManager()
         self.spotify_client = SpotifyClient()
         self.tree.on_error = self.on_tree_error
+        
+        # Dashboard settings
+        self.dashboard_enabled = True
+        self.dashboard_port = int(os.getenv("DASHBOARD_PORT", "5000"))
+        self.dashboard_thread = None
 
     async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CommandInvokeError):
@@ -714,6 +724,23 @@ class MusicBot(commands.Bot):
         else:
             logger.warning("Spotify API credentials not configured. Spotify features will not work.")
             
+        # Start web dashboard if enabled
+        if self.dashboard_enabled:
+            try:
+                # Register this bot instance with the dashboard
+                register_bot(self)
+                
+                # Start dashboard in background
+                self.dashboard_thread = start_dashboard(
+                    host='0.0.0.0', 
+                    port=self.dashboard_port, 
+                    debug=False
+                )
+                logger.info(f"Web dashboard started on http://localhost:{self.dashboard_port}/")
+            except Exception as e:
+                logger.error(f"Failed to start dashboard: {e}")
+                self.dashboard_enabled = False
+            
         await self.change_presence(activity=discord.Game(name="your dog music fr"))
         self.presence_loop.start()
 
@@ -736,7 +763,8 @@ class MusicBot(commands.Bot):
                     if spotify_handled:
                         return
                     else:
-                        await interaction.followup.send("Failed to process Spotify URL. Trying as a regular URL...")
+                        await interaction.followup.send("Failed to process Spotify URL. Please check your Spotify configuration.")
+                        return  # Don't attempt to process Spotify URLs with yt-dlp
 
                 # Send initial processing message
                 processing_embed = discord.Embed(
@@ -961,6 +989,13 @@ class MusicBot(commands.Bot):
                     )
                 )
                 
+                # Record song play in dashboard
+                if self.dashboard_enabled:
+                    try:
+                        record_song_played(guild.id, song)
+                    except Exception as e:
+                        logger.error(f"Failed to record song in dashboard: {e}")
+                
                 await self._send_now_playing_embed(interaction, song)
 
             except Exception as e:
@@ -984,7 +1019,7 @@ class MusicBot(commands.Bot):
                 # Play the leave sound
                 leave_source = discord.PCMVolumeTransformer(
                     discord.FFmpegPCMAudio("leave.mp3"),
-                    volume=1.1  # Set leave sound to 100% volume
+                    volume=0.2  # Set leave sound volume
                 )
                 
                 def after_leave(error):

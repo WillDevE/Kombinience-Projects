@@ -7,7 +7,6 @@ A Discord music bot that can play audio from YouTube and directly download from 
 - Play music from YouTube URLs
 - Direct download and playback from Spotify (tracks, playlists, albums)
 - Queue management
-- Volume control
 - Skip, pause, and resume functionality
 
 ## Setup
@@ -31,8 +30,7 @@ SPOTIFY_CLIENT_SECRET=your_spotify_client_secret_here
 SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
 
 # Bot Configuration
-DEFAULT_VOLUME=1.0
-MAX_VOLUME=2.0
+DEFAULT_VOLUME=0.2
 MAX_SONG_LENGTH=900  # 15 minutes in seconds
 ```
 
@@ -53,7 +51,6 @@ docker-compose up -d
 - `/spotify <url>` - Play specifically from Spotify (track, playlist, or album)
 - `/skip` - Skip the current song
 - `/queue` - Display the current queue
-- `/volume <percentage>` - Set the volume (0-200%)
 - `/clear` - Clear the queue
 - `/pause` - Pause the current song
 - `/resume` - Resume playback

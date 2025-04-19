@@ -1,0 +1,85 @@
+<!-- Server Activity Section for Guild Detail Page -->
+<div class="history">
+    <div class="history-header">
+        <h2 class="history-title">Server Activity</h2>
+    </div>
+    
+    {% if data and data.server_stats and guild_id in data.server_stats and data.server_stats[guild_id].most_active_hours %}
+        <!-- Activity by hour chart -->
+        <div class="usage-stats">
+            <div class="usage-stats-title">Activity by Hour</div>
+            
+            {% set hours = data.server_stats[guild_id].most_active_hours %}
+            {% set max_activity = max(hours) if max(hours) > 0 else 1 %}
+            
+            <div class="activity-chart">
+                {% for hour_count in hours %}
+                    {% set height_percent = (hour_count / max_activity * 100)|int %}
+                    <div class="hour-bar" style="height: {{ height_percent }}%;"></div>
+                {% endfor %}
+            </div>
+            
+            <div class="hour-markers">
+                <span>00:00</span>
+                <span>06:00</span>
+                <span>12:00</span>
+                <span>18:00</span>
+                <span>23:59</span>
+            </div>
+            
+            {% set total_sessions = sum(hours) %}
+            {% set most_active_hour = hours.index(max(hours)) %}
+            
+            <div class="usage-stats-grid" style="margin-top: 10px;">
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ total_sessions }}</div>
+                    <div class="usage-stat-label">Total Sessions</div>
+                </div>
+                
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ "%02d:00"|format(most_active_hour) }}</div>
+                    <div class="usage-stat-label">Most Active Hour</div>
+                </div>
+                
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ data.server_stats[guild_id].last_active }}</div>
+                    <div class="usage-stat-label">Last Active</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Usage statistics summary -->
+        <div class="usage-stats">
+            <div class="usage-stats-title">Usage Summary</div>
+            
+            <div class="usage-stats-grid">
+                {% set usage_hours = (data.server_stats[guild_id].total_bot_usage_time / 3600)|round(1) %}
+                {% set avg_song_length = (data.server_stats[guild_id].total_play_time / data.server_stats[guild_id].songs_played)|round if data.server_stats[guild_id].songs_played > 0 else 0 %}
+                {% set avg_mins = (avg_song_length / 60)|int %}
+                {% set avg_secs = (avg_song_length % 60)|int %}
+                
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ usage_hours }}</div>
+                    <div class="usage-stat-label">Hours of Usage</div>
+                </div>
+                
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ data.server_stats[guild_id].songs_played }}</div>
+                    <div class="usage-stat-label">Total Songs</div>
+                </div>
+                
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ avg_mins }}:{{ "%02d"|format(avg_secs) }}</div>
+                    <div class="usage-stat-label">Avg Song Length</div>
+                </div>
+                
+                <div class="usage-stat-item">
+                    <div class="usage-stat-value">{{ data.server_stats[guild_id].first_seen.split(' ')[0] }}</div>
+                    <div class="usage-stat-label">First Seen</div>
+                </div>
+            </div>
+        </div>
+    {% else %}
+        <p class="text-center">No activity data available for this server yet.</p>
+    {% endif %}
+</div>
