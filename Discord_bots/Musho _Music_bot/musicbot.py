@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 from collections import defaultdict
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Union
 import itertools
+import re
 
 import discord
 import aiohttp
@@ -14,6 +16,8 @@ from fake_useragent import UserAgent
 import yt_dlp
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
 # Load environment variables
 load_dotenv()
@@ -28,17 +32,24 @@ logger = logging.getLogger(__name__)
 
 # Constants
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-COBALT_API_URL = os.getenv("COBALT_API_URL")
-COBALT_API_KEY = os.getenv("COBALT_API_KEY")
-# Custom Docker host alias, defaults to host.docker.internal
-DOCKER_HOST_ALIAS = os.getenv("DOCKER_HOST_ALIAS", "host.docker.internal")
 # Path to YouTube cookies file
 YOUTUBE_COOKIES = os.path.join(os.path.dirname(__file__), "youtube_cookies.txt")
+# Path to a writable copy of the cookies file
+YOUTUBE_COOKIES_WRITABLE = os.path.join(os.path.dirname(__file__), "downloads", "yt_cookies_writable.txt")
 MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY = 1
-DEFAULT_VOLUME = float(os.getenv("DEFAULT_VOLUME", "1.0"))
-MAX_VOLUME = float(os.getenv("MAX_VOLUME", "2.0"))
-MAX_SONG_LENGTH = int(os.getenv("MAX_SONG_LENGTH", "900"))  # 15 minutes in seconds
+DEFAULT_VOLUME = float(os.getenv("DEFAULT_VOLUME", "1.1"))
+MAX_SONG_LENGTH = int(os.getenv("MAX_SONG_LENGTH", "7200"))  # 120 minutes in seconds
+
+# Spotify Configuration
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+
+# Spotify URL patterns
+SPOTIFY_TRACK_URL_PATTERN = r'https?://open\.spotify\.com/track/([a-zA-Z0-9]+)'
+SPOTIFY_PLAYLIST_URL_PATTERN = r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)'
+SPOTIFY_ALBUM_URL_PATTERN = r'https?://open\.spotify\.com/album/([a-zA-Z0-9]+)'
 
 class Song:
     def __init__(self, filename: str, title: str, duration: str, url: str, thumbnail: str):
@@ -47,17 +58,513 @@ class Song:
         self.duration = duration
         self.url = url
         self.thumbnail = thumbnail
+        self.playlist_info = None  # Optional playlist metadata
 
     @property
     def tuple(self) -> tuple:
         return (self.filename, self.title, self.duration, self.url, self.thumbnail)
+
+class SpotifyClient:
+    def __init__(self):
+        """Initialize the Spotify client with credentials from environment variables."""
+        if not all([SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET]):
+            self.client = None
+            logger.warning("Spotify credentials not found. Spotify support will be disabled.")
+        else:
+            # Initialize spotipy client for metadata fetching
+            self.client = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+                client_id=SPOTIFY_CLIENT_ID,
+                client_secret=SPOTIFY_CLIENT_SECRET
+            ))
+            
+            # Set up environment variables for spotify-dlp
+            os.environ["SPOTIFY_DLP_CLIENT_ID"] = SPOTIFY_CLIENT_ID
+            os.environ["SPOTIFY_DLP_CLIENT_SECRET"] = SPOTIFY_CLIENT_SECRET
+            
+            logger.info("Spotify client initialized successfully.")
+
+    def is_available(self) -> bool:
+        """Check if Spotify client is available for use."""
+        return self.client is not None
+
+    def is_spotify_url(self, url: str) -> bool:
+        """Check if the URL is a Spotify URL."""
+        return bool(re.match(SPOTIFY_TRACK_URL_PATTERN, url)) or \
+               bool(re.match(SPOTIFY_PLAYLIST_URL_PATTERN, url)) or \
+               bool(re.match(SPOTIFY_ALBUM_URL_PATTERN, url))
+
+    def get_track_type(self, url: str) -> Optional[str]:
+        """Determine the type of Spotify URL (track, playlist, album)."""
+        if re.match(SPOTIFY_TRACK_URL_PATTERN, url):
+            return "track"
+        elif re.match(SPOTIFY_PLAYLIST_URL_PATTERN, url):
+            return "playlist"
+        elif re.match(SPOTIFY_ALBUM_URL_PATTERN, url):
+            return "album"
+        return None
+
+    def get_track_id(self, url: str) -> Optional[str]:
+        """Extract the track ID from a Spotify track URL."""
+        match = re.match(SPOTIFY_TRACK_URL_PATTERN, url)
+        if match:
+            return match.group(1)
+        return None
+
+    def get_playlist_id(self, url: str) -> Optional[str]:
+        """Extract the playlist ID from a Spotify playlist URL."""
+        match = re.match(SPOTIFY_PLAYLIST_URL_PATTERN, url)
+        if match:
+            return match.group(1)
+        return None
+
+    def get_album_id(self, url: str) -> Optional[str]:
+        """Extract the album ID from a Spotify album URL."""
+        match = re.match(SPOTIFY_ALBUM_URL_PATTERN, url)
+        if match:
+            return match.group(1)
+        return None
+
+    def get_track_info(self, track_id: str) -> Optional[Dict]:
+        """Get information about a track."""
+        if not self.is_available():
+            return None
+        try:
+            return self.client.track(track_id)
+        except Exception as e:
+            logger.error(f"Error getting track info from Spotify: {e}")
+            return None
+
+    async def download_track(self, url: str) -> Optional[Song]:
+        """Download a track from Spotify using spotify-dlp."""
+        if not self.is_available():
+            return None
+            
+        try:
+            # Create a unique download directory for this track
+            download_dir = os.path.join(os.getcwd(), "downloads", "spotify")
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Get track metadata using spotipy for better details
+            track_id = self.get_track_id(url)
+            if not track_id:
+                logger.error(f"Could not extract track ID from Spotify URL: {url}")
+                return None
+                
+            track_info = self.get_track_info(track_id)
+            if not track_info:
+                logger.error(f"Could not get track info from Spotify: {url}")
+                return None
+            
+            # Prepare track details
+            track_title = track_info['name']
+            track_artist = track_info['artists'][0]['name']
+            track_album = track_info['album']['name']
+            duration_ms = track_info['duration_ms']
+            minutes = int((duration_ms / 1000) // 60)
+            seconds = int((duration_ms / 1000) % 60)
+            duration_str = f"{minutes}:{seconds:02d}"
+            thumbnail = track_info['album']['images'][0]['url'] if track_info['album']['images'] else None
+            
+            # Create a safe filename
+            safe_filename = f"{track_artist} - {track_title}".replace('/', '_').replace('\\', '_') \
+                                                           .replace(':', '_').replace('*', '_') \
+                                                           .replace('?', '_').replace('"', '_') \
+                                                           .replace('<', '_').replace('>', '_') \
+                                                           .replace('|', '_')
+            
+            output_path = os.path.join(download_dir, f"{safe_filename}.mp3")
+            
+            # Run spotify-dlp to download the track
+            logger.info(f"Downloading track from Spotify: {track_artist} - {track_title}")
+            
+            # Use spotify-dlp in a subprocess
+            cmd = [
+                "spotify-dlp",
+                url,
+                "-o", download_dir,
+                "-c", "mp3",
+                "-m",  # Include metadata
+                "-y"   # Skip confirmation
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                logger.error(f"spotify-dlp failed: {stderr.decode()}")
+                return None
+                
+            # Find the downloaded file (it might have a slightly different name)
+            downloaded_files = []
+            for file in os.listdir(download_dir):
+                if file.endswith(".mp3") and (track_title.lower() in file.lower() or track_artist.lower() in file.lower()):
+                    downloaded_files.append(os.path.join(download_dir, file))
+            
+            if not downloaded_files:
+                logger.error("spotify-dlp did not produce an output file")
+                return None
+                
+            # Use the most recently created file as it's likely the one we just downloaded
+            downloaded_files.sort(key=os.path.getmtime, reverse=True)
+            actual_output_path = downloaded_files[0]
+            
+            # Create a Song object with the downloaded track
+            return Song(
+                filename=actual_output_path,
+                title=f"{track_artist} - {track_title}",
+                duration=duration_str,
+                url=url,
+                thumbnail=thumbnail
+            )
+            
+        except Exception as e:
+            logger.error(f"Error downloading track from Spotify: {e}", exc_info=True)
+            return None
+            
+    async def get_playlist_tracks(self, playlist_id: str) -> List[Dict]:
+        """Get tracks in a playlist."""
+        if not self.is_available():
+            return []
+        try:
+            results = []
+            playlist_tracks = self.client.playlist_tracks(playlist_id)
+            results.extend([item['track'] for item in playlist_tracks['items'] if item['track']])
+
+            # Handle pagination for playlists with more than 100 tracks
+            while playlist_tracks['next']:
+                playlist_tracks = self.client.next(playlist_tracks)
+                results.extend([item['track'] for item in playlist_tracks['items'] if item['track']])
+
+            return results
+        except Exception as e:
+            logger.error(f"Error getting playlist tracks from Spotify: {e}")
+            return []
+
+    async def get_album_tracks(self, album_id: str) -> List[Dict]:
+        """Get tracks in an album."""
+        if not self.is_available():
+            return []
+        try:
+            results = []
+            album_tracks = self.client.album_tracks(album_id)
+            results.extend(album_tracks['items'])
+
+            # Handle pagination for albums with more than 50 tracks
+            while album_tracks['next']:
+                album_tracks = self.client.next(album_tracks)
+                results.extend(album_tracks['items'])
+
+            return results
+        except Exception as e:
+            logger.error(f"Error getting album tracks from Spotify: {e}")
+            return []
+
+    async def download_playlist(self, playlist_id: str, max_tracks: int = 100, page: int = 1) -> List[Song]:
+        """Download a playlist from Spotify with pagination support."""
+        if not self.is_available():
+            return []
+            
+        try:
+            # Create a unique download directory for this playlist
+            download_dir = os.path.join(os.getcwd(), "downloads", "spotify", f"playlist_{playlist_id}")
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Get playlist info for better details
+            playlist_info = self.client.playlist(playlist_id)
+            playlist_name = playlist_info['name']
+            playlist_total = playlist_info.get('tracks', {}).get('total', 0)
+            playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+            
+            # Calculate pagination
+            start_index = (page - 1) * max_tracks + 1
+            end_index = page * max_tracks
+            
+            # First get all tracks metadata from the playlist
+            all_playlist_tracks = await self.get_playlist_tracks(playlist_id)
+            if not all_playlist_tracks:
+                logger.error(f"Could not fetch tracks for playlist: {playlist_id}")
+                return []
+                
+            # Apply pagination
+            start_idx = (page - 1) * max_tracks
+            end_idx = min(start_idx + max_tracks, len(all_playlist_tracks))
+            playlist_tracks = all_playlist_tracks[start_idx:end_idx]
+            
+            if not playlist_tracks:
+                logger.error(f"No tracks found for playlist page {page}")
+                return []
+            
+            logger.info(f"Processing {len(playlist_tracks)} tracks from playlist '{playlist_name}' (page {page})")
+            
+            # Use spotify-dlp to download tracks for this page
+            cmd = [
+                "spotify-dlp",
+                playlist_url,
+                "-o", download_dir,
+                "-c", "mp3",
+                "-m",  # Include metadata
+                "-y",  # Skip confirmation
+                "-l", f"{start_index}:{end_index}"  # Limit to current page
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                logger.error(f"spotify-dlp failed: {stderr.decode()}")
+                return []
+            
+            # Map of track IDs to metadata to preserve proper information
+            track_metadata = {}
+            for track in playlist_tracks:
+                if track and 'id' in track:
+                    track_metadata[track['id']] = {
+                        'name': track.get('name', 'Unknown'),
+                        'artist': track.get('artists', [{}])[0].get('name', 'Unknown Artist'),
+                        'album': track.get('album', {}).get('name', 'Unknown Album'),
+                        'duration_ms': track.get('duration_ms', 0),
+                        'image': track.get('album', {}).get('images', [{}])[0].get('url') if track.get('album', {}).get('images') else None
+                    }
+            
+            # Find all downloaded MP3 files
+            downloaded_songs = []
+            for file in os.listdir(download_dir):
+                if file.endswith(".mp3"):
+                    file_path = os.path.join(download_dir, file)
+                    
+                    # Try to match with track metadata using filename
+                    matched_track = None
+                    file_name_lower = file.lower().replace(".mp3", "")
+                    
+                    for track_id, metadata in track_metadata.items():
+                        track_name_lower = metadata['name'].lower()
+                        artist_name_lower = metadata['artist'].lower()
+                        
+                        # Check if track name and artist are in the filename
+                        if track_name_lower in file_name_lower and artist_name_lower in file_name_lower:
+                            matched_track = metadata
+                            # Remove this track from the map to avoid duplicates
+                            track_metadata.pop(track_id, None)
+                            break
+                    
+                    # If we found a match, use its metadata
+                    if matched_track:
+                        duration_ms = matched_track.get('duration_ms', 0)
+                        minutes = int((duration_ms / 1000) // 60)
+                        seconds = int((duration_ms / 1000) % 60)
+                        duration_str = f"{minutes}:{seconds:02d}"
+                        
+                        song = Song(
+                            filename=file_path,
+                            title=f"{matched_track['artist']} - {matched_track['name']}",
+                            duration=duration_str,
+                            url=playlist_url,
+                            thumbnail=matched_track.get('image')
+                        )
+                    else:
+                        # Fall back to parsing filename if no match
+                        parts = file.replace(".mp3", "").split(" - ", 1)
+                        if len(parts) == 2:
+                            artist, title = parts
+                        else:
+                            artist, title = "Unknown Artist", parts[0]
+                        
+                        song = Song(
+                            filename=file_path,
+                            title=f"{artist} - {title}",
+                            duration="Unknown",
+                            url=playlist_url,
+                            thumbnail=None
+                        )
+                    
+                    downloaded_songs.append(song)
+            
+            logger.info(f"Downloaded {len(downloaded_songs)} songs from playlist: {playlist_name}")
+            
+            # Add playlist info to return object
+            for song in downloaded_songs:
+                song.playlist_info = {
+                    'name': playlist_name,
+                    'total_tracks': playlist_total,
+                    'current_page': page,
+                    'tracks_per_page': max_tracks
+                }
+                
+            return downloaded_songs
+            
+        except Exception as e:
+            logger.error(f"Error downloading playlist from Spotify: {e}", exc_info=True)
+            return []
+            
+    async def download_album(self, album_id: str, max_tracks: int = 100, page: int = 1) -> List[Song]:
+        """Download an album from Spotify with pagination support."""
+        if not self.is_available():
+            return []
+            
+        try:
+            # Create a unique download directory for this album
+            download_dir = os.path.join(os.getcwd(), "downloads", "spotify", f"album_{album_id}")
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Get album info for better details
+            album_info = self.client.album(album_id)
+            album_name = album_info['name']
+            album_artist = album_info['artists'][0]['name']
+            album_total = album_info.get('total_tracks', 0)
+            
+            album_url = f"https://open.spotify.com/album/{album_id}"
+            
+            # Calculate pagination
+            start_index = (page - 1) * max_tracks + 1
+            end_index = page * max_tracks
+            
+            # First get all tracks metadata from the album
+            all_album_tracks = await self.get_album_tracks(album_id)
+            if not all_album_tracks:
+                logger.error(f"Could not fetch tracks for album: {album_id}")
+                return []
+                
+            # Apply pagination
+            start_idx = (page - 1) * max_tracks
+            end_idx = min(start_idx + max_tracks, len(all_album_tracks))
+            album_tracks = all_album_tracks[start_idx:end_idx]
+            
+            if not album_tracks:
+                logger.error(f"No tracks found for album page {page}")
+                return []
+            
+            logger.info(f"Processing {len(album_tracks)} tracks from album '{album_name}' (page {page})")
+            
+            # Use spotify-dlp to download tracks for this page
+            cmd = [
+                "spotify-dlp",
+                album_url,
+                "-o", download_dir,
+                "-c", "mp3",
+                "-m",  # Include metadata
+                "-y",  # Skip confirmation
+                "-l", f"{start_index}:{end_index}"  # Limit to current page
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                logger.error(f"spotify-dlp failed: {stderr.decode()}")
+                return []
+                
+            # Get album images for thumbnail
+            album_image = None
+            if album_info.get('images') and len(album_info['images']) > 0:
+                album_image = album_info['images'][0].get('url')
+                
+            # Map of track positions to metadata to preserve proper information
+            track_metadata = {}
+            for track in album_tracks:
+                if track:
+                    # Use track position as key in an album (more reliable than trying to match by name)
+                    position = track.get('track_number', 0)
+                    track_metadata[position] = {
+                        'name': track.get('name', 'Unknown'),
+                        'artist': album_artist,  # Use album artist for consistency
+                        'album': album_name,
+                        'duration_ms': track.get('duration_ms', 0),
+                        'disc_number': track.get('disc_number', 1),
+                        'track_number': position,
+                        'image': album_image
+                    }
+            
+            # Find all downloaded MP3 files
+            downloaded_songs = []
+            for file in os.listdir(download_dir):
+                if file.endswith(".mp3"):
+                    file_path = os.path.join(download_dir, file)
+                    
+                    # Try to match with track metadata using filename
+                    matched_track = None
+                    file_name_lower = file.lower().replace(".mp3", "")
+                    
+                    # First try to match directly with track metadata
+                    for position, metadata in track_metadata.items():
+                        track_name_lower = metadata['name'].lower()
+                        
+                        # Check if track name is in the filename (artist should always match in an album)
+                        if track_name_lower in file_name_lower:
+                            matched_track = metadata
+                            # Remove this track from the map to avoid duplicates
+                            track_metadata.pop(position, None)
+                            break
+                    
+                    # If we found a match, use its metadata
+                    if matched_track:
+                        duration_ms = matched_track.get('duration_ms', 0)
+                        minutes = int((duration_ms / 1000) // 60)
+                        seconds = int((duration_ms / 1000) % 60)
+                        duration_str = f"{minutes}:{seconds:02d}"
+                        
+                        song = Song(
+                            filename=file_path,
+                            title=f"{matched_track['artist']} - {matched_track['name']}",
+                            duration=duration_str,
+                            url=album_url,
+                            thumbnail=matched_track.get('image')
+                        )
+                    else:
+                        # Fall back to parsing filename if no match
+                        parts = file.replace(".mp3", "").split(" - ", 1)
+                        if len(parts) == 2:
+                            artist, title = parts
+                        else:
+                            artist, title = album_artist, parts[0]
+                        
+                        song = Song(
+                            filename=file_path,
+                            title=f"{artist} - {title}",
+                            duration="Unknown",
+                            url=album_url,
+                            thumbnail=album_image  # At least use the album image
+                        )
+                    
+                    downloaded_songs.append(song)
+            
+            logger.info(f"Downloaded {len(downloaded_songs)} songs from album: {album_artist} - {album_name}")
+            
+            # Add album info to return object
+            for song in downloaded_songs:
+                song.playlist_info = {
+                    'name': f"{album_artist} - {album_name}",
+                    'total_tracks': album_total,
+                    'current_page': page,
+                    'tracks_per_page': max_tracks,
+                    'is_album': True
+                }
+                
+            return downloaded_songs
+            
+        except Exception as e:
+            logger.error(f"Error downloading album from Spotify: {e}", exc_info=True)
+            return []
 
 class QueueManager:
     def __init__(self):
         self.queues = defaultdict(list)
         self.current_songs = {}
         self.file_use_count = defaultdict(int)
-        self.volume = defaultdict(lambda: DEFAULT_VOLUME)
         self._queue_locks = defaultdict(asyncio.Lock)
         self._download_tasks = {}  # Track download tasks per guild
         self.download_queue = {}   # Track songs pending download
@@ -159,8 +666,7 @@ class QueueManager:
         except Exception as e:
             logger.error(f"Error in delayed file cleanup for {filename}: {e}")
 
-    def set_volume(self, guild_id: int, volume: float) -> None:
-        self.volume[guild_id] = min(max(0.0, volume), MAX_VOLUME)
+
 
 class MusicBot(commands.Bot):
     def __init__(self):
@@ -170,6 +676,7 @@ class MusicBot(commands.Bot):
         
         super().__init__(command_prefix='/', intents=intents)
         self.queue_manager = QueueManager()
+        self.spotify_client = SpotifyClient()
         self.tree.on_error = self.on_tree_error
 
     async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -200,6 +707,13 @@ class MusicBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f"Bot is ready and logged in as {self.user}")
+        
+        # Check Spotify API credentials
+        if self.spotify_client.is_available():
+            logger.info("Spotify API client initialized successfully")
+        else:
+            logger.warning("Spotify API credentials not configured. Spotify features will not work.")
+            
         await self.change_presence(activity=discord.Game(name="your dog music fr"))
         self.presence_loop.start()
 
@@ -207,7 +721,7 @@ class MusicBot(commands.Bot):
         """Register all music-related commands"""
         
         @self.tree.command(name="play", description="Play a song from URL")
-        async def play(interaction: discord.Interaction, url: str):
+        async def play(interaction: discord.Interaction, url: str, page: int = 1):
             await interaction.response.defer()
             try:
                 voice_client = await self._ensure_voice_client(interaction)
@@ -215,10 +729,32 @@ class MusicBot(commands.Bot):
                     await interaction.followup.send("Failed to join voice channel.")
                     return
 
-                # Download the song first
+                # Check if it's a Spotify URL and handle it specially
+                if self.spotify_client.is_available() and self.spotify_client.is_spotify_url(url):
+                    logger.info(f"Detected Spotify URL: {url}")
+                    spotify_handled = await self._handle_spotify_url(url, interaction, page)
+                    if spotify_handled:
+                        return
+                    else:
+                        await interaction.followup.send("Failed to process Spotify URL. Trying as a regular URL...")
+
+                # Send initial processing message
+                processing_embed = discord.Embed(
+                    title="Processing Track",
+                    description=f"Downloading from YouTube: {url}",
+                    color=discord.Color.blue()
+                )
+                processing_message = await interaction.followup.send(embed=processing_embed)
+
+                # Download the song
                 song = await self._download_song(url)
                 if not song:
-                    await interaction.followup.send("Failed to download the song.")
+                    error_embed = discord.Embed(
+                        title="Download Failed",
+                        description="Failed to download the song.",
+                        color=discord.Color.red()
+                    )
+                    await processing_message.edit(embed=error_embed)
                     return
 
                 await self.queue_manager.add_song(interaction.guild_id, song)
@@ -226,9 +762,17 @@ class MusicBot(commands.Bot):
                 if not voice_client.is_playing():
                     await self._play_next(interaction.guild, interaction)
                 else:
-                    # Send a queued message with position
+                    # Update the processing message with queue info
                     position = len(self.queue_manager.queues[interaction.guild_id])
-                    await interaction.followup.send(f"🎵 Added to queue (Position: {position}): {song.title}")
+                    success_embed = discord.Embed(
+                        title="Track Added",
+                        description=f"Added to queue (Position: {position}): {song.title}",
+                        color=discord.Color.green()
+                    )
+                    if song.thumbnail:
+                        success_embed.set_thumbnail(url=song.thumbnail)
+                    success_embed.add_field(name="Duration", value=song.duration)
+                    await processing_message.edit(embed=success_embed)
 
             except Exception as e:
                 logger.error(f"Error in play command: {e}")
@@ -292,23 +836,7 @@ class MusicBot(commands.Bot):
 
             await interaction.response.send_message(embed=embed)
 
-        @self.tree.command(name="volume", description="Set the volume (0-200%)")
-        async def volume(interaction: discord.Interaction, percentage: int):
-            if not interaction.guild.voice_client:
-                await interaction.response.send_message("I'm not in a voice channel!")
-                return
 
-            if not 0 <= percentage <= 200:
-                await interaction.response.send_message("Volume must be between 0 and 200!")
-                return
-
-            volume_float = percentage / 100.0
-            self.queue_manager.set_volume(interaction.guild_id, volume_float)
-            
-            if interaction.guild.voice_client.source:
-                interaction.guild.voice_client.source.volume = volume_float
-
-            await interaction.response.send_message(f"🔊 Volume set to {percentage}%")
 
         @self.tree.command(name="clear", description="Clear the queue")
         async def clear(interaction: discord.Interaction):
@@ -422,7 +950,7 @@ class MusicBot(commands.Bot):
             try:
                 audio_source = discord.PCMVolumeTransformer(
                     discord.FFmpegPCMAudio(song.filename),
-                    volume=self.queue_manager.volume[guild.id]
+                    volume=DEFAULT_VOLUME
                 )
                 
                 guild.voice_client.play(
@@ -514,359 +1042,420 @@ class MusicBot(commands.Bot):
             embed.set_thumbnail(url=song.thumbnail)
             
         embed.add_field(name="Duration", value=str(song.duration))
+        
+        # Add queued by information
+        embed.set_footer(text=f"Queued by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
 
         # Send as a new message instead of a follow-up
         await interaction.channel.send(embed=embed)
 
-    async def _download_song(self, url: str) -> Optional[Song]:
-        """Download a song from YouTube."""
-        # First fetch metadata using yt-dlp (without downloading)
-        metadata = await self._fetch_metadata(url)
+    async def _handle_spotify_url(self, url: str, interaction: discord.Interaction, page: int) -> bool:
+        """Handle Spotify URLs (track, playlist, album)."""
+        if not self.spotify_client.is_available():
+            await interaction.followup.send("Spotify support is not configured. Please set up Spotify API credentials.")
+            return False
+
+        track_type = self.spotify_client.get_track_type(url)
+        if not track_type:
+            return False
+
+        if track_type == "track":
+            return await self._handle_spotify_track(url, interaction, page)
+        elif track_type == "playlist":
+            return await self._handle_spotify_playlist(url, interaction, page)
+        elif track_type == "album":
+            return await self._handle_spotify_album(url, interaction, page)
         
-        # Set default values if metadata fetch fails
-        title = "Unknown Title"
-        duration = "Unknown"
-        thumbnail = None
+        return False
+
+    async def _handle_spotify_track(self, url: str, interaction: discord.Interaction, page: int) -> bool:
+        """Handle a single Spotify track."""
+        track_id = self.spotify_client.get_track_id(url)
+        if not track_id:
+            embed = discord.Embed(
+                title="Invalid Track",
+                description="Could not extract Spotify track ID.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
+
+        # Send processing message
+        processing_embed = discord.Embed(
+            title="Processing Track",
+            description="Downloading from Spotify...",
+            color=discord.Color.blue()
+        )
+        processing_message = await interaction.followup.send(embed=processing_embed)
         
-        if metadata:
-            title, duration, thumbnail = metadata
-            logger.info(f"Using fetched metadata: {title}, {duration}")
+        # Directly download track from Spotify
+        song = await self.spotify_client.download_track(url)
+        if not song:
+            error_embed = discord.Embed(
+                title="Download Failed",
+                description="Could not download track from Spotify.",
+                color=discord.Color.red()
+            )
+            await processing_message.edit(embed=error_embed)
+            return False
+
+        await self.queue_manager.add_song(interaction.guild_id, song)
+        
+        voice_client = interaction.guild.voice_client
+        if voice_client and not voice_client.is_playing():
+            await self._play_next(interaction.guild, interaction)
         else:
-            # If metadata fetch fails, we'll use default values and continue
-            logger.warning(f"Metadata fetch failed for {url}, continuing with default values")
-            # Try to extract some minimal info from the URL
-            try:
-                from urllib.parse import urlparse, parse_qs
-                parsed_url = urlparse(url)
-                if 'youtube.com' in parsed_url.netloc or 'youtu.be' in parsed_url.netloc:
-                    if 'youtu.be' in parsed_url.netloc:
-                        video_id = parsed_url.path[1:]  # remove leading slash
-                    else:
-                        query = parse_qs(parsed_url.query)
-                        video_id = query.get('v', ['Unknown'])[0]
-                    title = f"YouTube-{video_id}"
-                else:
-                    title = f"Song from {parsed_url.netloc}"
-            except Exception as e:
-                logger.error(f"Error parsing URL for minimal info: {e}")
-                title = "Unknown Song"
+            position = len(self.queue_manager.queues[interaction.guild_id])
+            success_embed = discord.Embed(
+                title="Track Added",
+                description=f"Added to queue (Position: {position}): {song.title}",
+                color=discord.Color.green()
+            )
+            if song.thumbnail:
+                success_embed.set_thumbnail(url=song.thumbnail)
+            success_embed.add_field(name="Duration", value=song.duration)
+            
+            # Update the processing message instead of sending a new one
+            await processing_message.edit(embed=success_embed)
         
-        # Try to download using yt-dlp first
-        logger.info(f"Attempting to download audio via yt-dlp: {url}")
-        ytdlp_result = await self._download_via_ytdlp(url)
-        if ytdlp_result:
-            return ytdlp_result
-        
-        # Fallback to Cobalt if yt-dlp fails
-        logger.info(f"yt-dlp failed, falling back to Cobalt for: {url}")
-        return await self._download_via_cobalt(url, title, duration, thumbnail)
+        return True
 
-    async def _fetch_metadata(self, url: str) -> Optional[Tuple[str, str, str]]:
-        """Fetch only metadata from a URL using yt-dlp without downloading the file."""
-        ydl_opts = {
-            'format': 'bestaudio',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'skip_download': True,  # Skip downloading the actual file
-            'noplaylist': True,
-            'cookiefile': YOUTUBE_COOKIES,  # Use YouTube cookies for authentication
-        }
+    async def _handle_spotify_playlist(self, url: str, interaction: discord.Interaction, page: int) -> bool:
+        """Handle a Spotify playlist."""
+        playlist_id = self.spotify_client.get_playlist_id(url)
+        if not playlist_id:
+            embed = discord.Embed(
+                title="Invalid Playlist",
+                description="Could not extract Spotify playlist ID.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
 
+        # Get basic playlist info for the name
         try:
-            # Check if cookie file exists
-            if os.path.exists(YOUTUBE_COOKIES):
-                logger.info(f"Using YouTube cookies file: {YOUTUBE_COOKIES}")
-            else:
-                logger.warning(f"YouTube cookies file not found at: {YOUTUBE_COOKIES}")
+            playlist_info = self.spotify_client.client.playlist(playlist_id, fields="name,tracks(total)")
+            playlist_name = playlist_info.get('name', 'Unknown Playlist')
+            playlist_total = playlist_info.get('tracks', {}).get('total', 0)
+        except Exception as e:
+            logger.error(f"Error getting playlist info: {e}")
+            playlist_name = 'Spotify Playlist'
+            playlist_total = 0
+
+        # Limit to 100 tracks per page
+        max_tracks = 100
+        start_track = (page - 1) * max_tracks + 1
+        
+        # Get all tracks metadata first
+        playlist_tracks = await self.spotify_client.get_playlist_tracks(playlist_id)
+        if not playlist_tracks:
+            embed = discord.Embed(
+                title="No Tracks Found",
+                description=f"No tracks found in playlist.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
+            
+        # Apply pagination
+        start_idx = (page - 1) * max_tracks
+        end_idx = min(start_idx + max_tracks, len(playlist_tracks))
+        playlist_tracks_page = playlist_tracks[start_idx:end_idx]
+        
+        if not playlist_tracks_page:
+            embed = discord.Embed(
+                title="No Tracks Found",
+                description=f"Page {page} has no tracks.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
+        
+        # Send initial progress embed
+        status_embed = discord.Embed(
+            title=f"Playlist: {playlist_name}",
+            description=f"Processing tracks: 0/{len(playlist_tracks_page)}",
+            color=discord.Color.blue()
+        )
+        
+        # Add pagination info
+        max_pages = (playlist_total + max_tracks - 1) // max_tracks
+        if max_pages > 1:
+            status_embed.add_field(
+                name="Pagination", 
+                value=f"Page {page}/{max_pages} • Total tracks: {playlist_total}"
+            )
+        
+        # Add queued by information
+        status_embed.set_footer(text=f"Queued by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+            
+        status_message = await interaction.followup.send(embed=status_embed)
+        
+        # Process tracks one by one, starting playback as soon as the first track is available
+        playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+        is_playing = False
+        added_count = 0
+        
+        for i, track in enumerate(playlist_tracks_page):
+            if not track:
+                continue
                 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                logger.info(f"Fetching metadata for: {url}")
-                info = await asyncio.get_event_loop().run_in_executor(
-                    ThreadPoolExecutor(1),
-                    lambda: ydl.extract_info(url, download=False)
+            try:
+                # Get the Spotify track URL
+                track_id = track.get('id')
+                if not track_id:
+                    continue
+                    
+                track_url = f"https://open.spotify.com/track/{track_id}"
+                
+                # Update progress before downloading (so user knows which track is being processed)
+                if (i + 1) % 5 == 0 or i == 0:
+                    track_name = track.get('name', 'Unknown')
+                    artist_name = track.get('artists', [{}])[0].get('name', 'Unknown Artist')
+                    status_embed.description = f"Processing tracks: {added_count}/{len(playlist_tracks_page)}\nCurrently downloading: {artist_name} - {track_name}"
+                    await status_message.edit(embed=status_embed)
+                
+                # Download the track
+                song = await self.spotify_client.download_track(track_url)
+                if not song:
+                    continue
+                    
+                # Add song to queue
+                await self.queue_manager.add_song(interaction.guild_id, song)
+                added_count += 1
+                
+                # Start playing if this is the first track and nothing is currently playing
+                voice_client = interaction.guild.voice_client
+                if voice_client and not voice_client.is_playing() and not is_playing:
+                    await self._play_next(interaction.guild, interaction)
+                    is_playing = True
+                    
+                # Update progress message every 5 tracks or for important milestones
+                if (i + 1) % 5 == 0 or (i == len(playlist_tracks_page) - 1 and added_count > 0):
+                    status_embed.description = f"Added {added_count}/{len(playlist_tracks_page)} tracks to queue"
+                    status_embed.color = discord.Color.green() if i == len(playlist_tracks_page) - 1 else discord.Color.blue()
+                    await status_message.edit(embed=status_embed)
+
+            except Exception as e:
+                logger.error(f"Error processing playlist track: {e}")
+                # Continue with next track
+
+        # Final update with completion status
+        if added_count > 0:
+            status_embed.title = f"Playlist: {playlist_name} - Complete"
+            status_embed.description = f"Successfully added {added_count}/{len(playlist_tracks_page)} tracks to queue"
+            status_embed.color = discord.Color.green()
+            
+            # Add pagination info for next page if applicable
+            if page < max_pages:
+                status_embed.add_field(
+                    name="More Tracks", 
+                    value=f"Use `/play {url} page:{page+1}` for the next page",
+                    inline=False
                 )
                 
-                if not info:
-                    logger.error("No info returned from yt-dlp")
-                    return None
-
-                title = info.get('title', 'Unknown Title')
+            await status_message.edit(embed=status_embed)
+        else:
+            status_embed.title = f"Playlist Processing Failed"
+            status_embed.description = f"Could not add any tracks from the playlist"
+            status_embed.color = discord.Color.red()
+            await status_message.edit(embed=status_embed)
                 
-                # Format duration as mm:ss
-                duration_sec = info.get('duration', 0)
-                if duration_sec:
-                    minutes = int(duration_sec // 60)
-                    seconds = int(duration_sec % 60)
-                    duration = f"{minutes}:{seconds:02d}"
-                else:
-                    duration = "Unknown"
-                    
-                thumbnail = info.get('thumbnail')
-                
-                logger.info(f"Metadata fetched: {title}, {duration}")
-                return title, duration, thumbnail
+        return added_count > 0
 
-        except Exception as e:
-            logger.error(f"Error fetching metadata: {str(e)}")
-            return None
-        
-    async def _download_via_cobalt(self, url: str, title: str, duration: str, thumbnail: str) -> Optional[Song]:
-        """Attempt to download audio using the Cobalt API."""
-        if not COBALT_API_URL:
-            logger.warning("COBALT_API_URL not configured, skipping Cobalt.")
-            return None
+    async def _handle_spotify_album(self, url: str, interaction: discord.Interaction, page: int) -> bool:
+        """Handle a Spotify album."""
+        album_id = self.spotify_client.get_album_id(url)
+        if not album_id:
+            embed = discord.Embed(
+                title="Invalid Album",
+                description="Could not extract Spotify album ID.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
 
-        cobalt_endpoint = COBALT_API_URL.rstrip('/')
-        
-        # Translation for Docker: If Cobalt API URL uses localhost/127.0.0.1, replace with host.docker.internal
-        if "://127.0.0.1:" in cobalt_endpoint or "://localhost:" in cobalt_endpoint:
-            original_endpoint = cobalt_endpoint
-            # Extract the original host and port
-            parts = cobalt_endpoint.split("://")
-            if len(parts) == 2:
-                protocol = parts[0]
-                rest = parts[1]
-                # Find where the host:port ends
-                if "/" in rest:
-                    host_port, path = rest.split("/", 1)
-                    # Replace localhost or 127.0.0.1 with host.docker.internal, keeping the original port
-                    if ":" in host_port:
-                        host, port = host_port.split(":", 1)
-                        if host in ["127.0.0.1", "localhost"]:
-                            new_host_port = f"{DOCKER_HOST_ALIAS}:{port}"
-                            cobalt_endpoint = f"{protocol}://{new_host_port}/{path}"
-                            logger.info(f"Translated Cobalt API URL from {original_endpoint} to {cobalt_endpoint} for Docker")
-                else:
-                    # No path, just host:port
-                    host_port = rest
-                    if ":" in host_port:
-                        host, port = host_port.split(":", 1)
-                        if host in ["127.0.0.1", "localhost"]:
-                            new_host_port = f"{DOCKER_HOST_ALIAS}:{port}"
-                            cobalt_endpoint = f"{protocol}://{new_host_port}"
-                            logger.info(f"Translated Cobalt API URL from {original_endpoint} to {cobalt_endpoint} for Docker")
-        
-        payload = {
-            "url": url,
-            "downloadMode": "audio",
-            "audioFormat": "mp3",
-            "audioBitrate": "320",
-            "videoQuality": "1080",
-            "filenameStyle": "basic"
-        }
-        
-        logger.info(f"Attempting download via Cobalt: {url}")
-
+        # Get basic album info for the name
         try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                }
-                
-                # Add API key authentication if configured
-                if COBALT_API_KEY and COBALT_API_KEY.strip():
-                    headers['Authorization'] = f'Api-Key {COBALT_API_KEY}'
-                    
-                async with session.post(cobalt_endpoint, json=payload, headers=headers, timeout=30) as response:
-                    if response.status != 200:
-                        try:
-                            error_text = await response.text()
-                            error_data = json.loads(error_text)
-                            if error_data.get("status") == "error" and "error" in error_data:
-                                error_info = error_data["error"]
-                                error_code = error_info.get("code", "Unknown")
-                                error_context = error_info.get("context", {})
-                                logger.error(f"Cobalt API request failed with status {response.status}: {error_code} - Context: {error_context}")
-                            else:
-                                logger.error(f"Cobalt API request failed with status {response.status}: {error_text}")
-                        except (json.JSONDecodeError, KeyError):
-                            logger.error(f"Cobalt API request failed with status {response.status}: {await response.text()}")
-                        return None
-
-                    data = await response.json()
-                    status = data.get("status")
-                    
-                    logger.debug(f"Cobalt response: {data}")
-                    logger.debug(f"Cobalt response status: {status}")
-
-                    media_url = None
-
-                    if status == "stream":
-                        media_url = data.get("url")
-                    elif status == "redirect":
-                        media_url = data.get("url")
-                        if not media_url:
-                            logger.warning("Cobalt redirect status without URL.")
-                            return None
-                    elif status == "tunnel":
-                        media_url = data.get("url")
-                        if not media_url:
-                            logger.warning("Cobalt tunnel status without URL.")
-                            return None
-                        logger.info(f"Cobalt provided tunnel URL: {media_url}")
-                    elif status == "picker":
-                        picker_items = data.get("picker", [])
-                        if picker_items and picker_items[0].get("url"):
-                            media_url = picker_items[0]["url"]
-                        else:
-                            logger.warning("Cobalt picker status with no suitable items.")
-                            return None
-                    elif status == "error":
-                        error_info = data.get("error", {})
-                        error_code = error_info.get("code", "Unknown error")
-                        error_context = error_info.get("context", {})
-                        logger.warning(f"Cobalt API returned error: {error_code} - Context: {error_context}")
-                        return None
-                    else:
-                        logger.warning(f"Unhandled Cobalt status: {status} - Full response: {data}")
-                        return None
-
-                    if not media_url:
-                        logger.warning("Cobalt did not provide a usable media URL.")
-                        return None
-
-                    # Check if we got a placeholder domain in the URL
-                    if "api.url.example" in media_url or (not media_url.startswith("http") and "/tunnel?" in media_url):
-                        if not media_url.startswith("http"):
-                            logger.warning(f"Detected relative tunnel URL: {media_url}")
-                        else:
-                            logger.warning(f"Detected placeholder domain in Cobalt URL: {media_url}")
-                        
-                        # Extract the actual API domain from COBALT_API_URL
-                        cobalt_domain = None
-                        if COBALT_API_URL:
-                            try:
-                                from urllib.parse import urlparse
-                                parsed_cobalt_api = urlparse(COBALT_API_URL)
-                                cobalt_domain = f"{parsed_cobalt_api.scheme}://{parsed_cobalt_api.netloc}"
-                                logger.info(f"Extracted actual domain from COBALT_API_URL: {cobalt_domain}")
-                            except Exception as e:
-                                logger.error(f"Failed to parse COBALT_API_URL: {e}")
-                        
-                        if cobalt_domain:
-                            # Handle relative URLs
-                            if not media_url.startswith("http"):
-                                if media_url.startswith("/"):
-                                    corrected_url = f"{cobalt_domain}{media_url}"
-                                else:
-                                    corrected_url = f"{cobalt_domain}/{media_url}"
-                                logger.info(f"Corrected relative URL to absolute URL: {corrected_url}")
-                                media_url = corrected_url
-                            else:
-                                # Replace placeholder domain with actual domain
-                                from urllib.parse import urlparse, urlunparse
-                                parsed_media_url = urlparse(media_url)
-                                parsed_cobalt = urlparse(cobalt_domain)
-                                
-                                # Build new URL with correct domain but keep path and query
-                                corrected_url = urlunparse((
-                                    parsed_cobalt.scheme,
-                                    parsed_cobalt.netloc,
-                                    parsed_media_url.path,
-                                    parsed_media_url.params,
-                                    parsed_media_url.query,
-                                    parsed_media_url.fragment
-                                ))
-                                
-                                logger.info(f"Corrected domain in URL from {media_url} to {corrected_url}")
-                                media_url = corrected_url
-                        else:
-                            logger.error("Could not correct URL, no valid COBALT_API_URL available")
-                            return None
-
-                    # Translation for Docker: If media_url uses localhost/127.0.0.1, replace with host.docker.internal
-                    if "://127.0.0.1:" in media_url or "://localhost:" in media_url:
-                        original_url = media_url
-                        # Extract the original host and port
-                        parts = media_url.split("://")
-                        if len(parts) == 2:
-                            protocol = parts[0]
-                            rest = parts[1]
-                            # Find where the host:port ends
-                            if "/" in rest:
-                                host_port, path = rest.split("/", 1)
-                                # Replace localhost or 127.0.0.1 with host.docker.internal, keeping the original port
-                                if ":" in host_port:
-                                    host, port = host_port.split(":", 1)
-                                    if host in ["127.0.0.1", "localhost"]:
-                                        new_host_port = f"{DOCKER_HOST_ALIAS}:{port}"
-                                        media_url = f"{protocol}://{new_host_port}/{path}"
-                                        logger.info(f"Translated Cobalt URL from {original_url} to {media_url} for Docker")
-                    
-                    logger.info(f"Cobalt provided media URL: {media_url}")
-
-                # Download content from the URL Cobalt provided
-                try:
-                    # Generate a unique filename for the downloaded song
-                    filename = f"downloads/{title.replace('/', '_').replace(':', '_')}.mp3"
-                    
-                    if not os.path.exists(os.path.dirname(filename)):
-                        os.makedirs(os.path.dirname(filename))
-                        
-                    async with session.get(media_url, timeout=60) as media_response:
-                        if media_response.status == 200:
-                            with open(filename, 'wb') as f:
-                                audio_content = await media_response.read()
-                                f.write(audio_content)
-                            logger.info(f"Successfully downloaded audio via Cobalt: {len(audio_content)} bytes to {filename}")
-                            
-                            # Use the metadata we obtained earlier
-                            return Song(
-                                filename=filename,
-                                title=title,
-                                duration=duration,
-                                url=url,
-                                thumbnail=thumbnail
-                            )
-                        else:
-                            logger.error(f"Failed to download media from Cobalt URL ({media_url}): HTTP {media_response.status}")
-                            return None
-                except Exception as e:
-                    logger.error(f"Error downloading or saving Cobalt audio: {e}", exc_info=True)
-                    return None
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Network error during Cobalt request or download: {e}")
-            return None
-        except asyncio.TimeoutError:
-            logger.error("Timeout during Cobalt request or download.")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode Cobalt API JSON response: {e}")
-            return None
+            album_info = self.spotify_client.client.album(album_id)
+            album_name = album_info.get('name', 'Unknown Album')
+            album_artist = album_info.get('artists', [{}])[0].get('name', 'Unknown Artist')
+            album_display = f"{album_artist} - {album_name}"
+            album_total = album_info.get('total_tracks', 0)
+            album_image = album_info.get('images', [{}])[0].get('url') if album_info.get('images') else None
         except Exception as e:
-            logger.error(f"Unexpected error during Cobalt processing: {e}", exc_info=True)
-            return None
+            logger.error(f"Error getting album info: {e}")
+            album_display = 'Spotify Album'
+            album_total = 0
+            album_image = None
+
+        # Limit to 100 tracks per page
+        max_tracks = 100
+        start_track = (page - 1) * max_tracks + 1
+        
+        # Get all album tracks first
+        album_tracks = await self.spotify_client.get_album_tracks(album_id)
+        if not album_tracks:
+            embed = discord.Embed(
+                title="No Tracks Found",
+                description=f"No tracks found in album.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
             
-    async def _download_via_ytdlp(self, url: str) -> Optional[Song]:
-        """Download audio from a URL using yt-dlp as a fallback."""
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': 'downloads/%(title)s.%(ext)s',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'noplaylist': True,
-            # Only download audio stream
-            'format_sort': ['acodec:mp3:128'],
-            'postprocessor_args': ['-ar', '44100'],
-            'prefer_ffmpeg': True,
-            'cookiefile': YOUTUBE_COOKIES,  # Use YouTube cookies for authentication
-        }
+        # Apply pagination
+        start_idx = (page - 1) * max_tracks
+        end_idx = min(start_idx + max_tracks, len(album_tracks))
+        album_tracks_page = album_tracks[start_idx:end_idx]
+        
+        if not album_tracks_page:
+            embed = discord.Embed(
+                title="No Tracks Found",
+                description=f"Page {page} has no tracks.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return False
+        
+        # Send initial progress embed
+        status_embed = discord.Embed(
+            title=f"Album: {album_display}",
+            description=f"Processing tracks: 0/{len(album_tracks_page)}",
+            color=discord.Color.blue()
+        )
+        if album_image:
+            status_embed.set_thumbnail(url=album_image)
+        
+        # Add pagination info
+        max_pages = (album_total + max_tracks - 1) // max_tracks
+        if max_pages > 1:
+            status_embed.add_field(
+                name="Pagination", 
+                value=f"Page {page}/{max_pages} • Total tracks: {album_total}"
+            )
+        
+        # Add queued by information
+        status_embed.set_footer(text=f"Queued by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+            
+        status_message = await interaction.followup.send(embed=status_embed)
+        
+        # Process tracks one by one, starting playback as soon as the first track is available
+        is_playing = False
+        added_count = 0
+        
+        for i, track in enumerate(album_tracks_page):
+            if not track:
+                continue
+                
+            try:
+                # Get the Spotify track URL
+                track_id = track.get('id')
+                if not track_id:
+                    continue
+                    
+                track_url = f"https://open.spotify.com/track/{track_id}"
+                
+                # Update progress before downloading (so user knows which track is being processed)
+                if (i + 1) % 5 == 0 or i == 0:
+                    track_name = track.get('name', 'Unknown')
+                    status_embed.description = f"Processing tracks: {added_count}/{len(album_tracks_page)}\nCurrently downloading: {track_name}"
+                    await status_message.edit(embed=status_embed)
+                
+                # Download the track
+                song = await self.spotify_client.download_track(track_url)
+                if not song:
+                    continue
+                    
+                # Set album metadata for the song
+                if song.thumbnail is None and album_image:
+                    song.thumbnail = album_image
+                
+                # Add song to queue
+                await self.queue_manager.add_song(interaction.guild_id, song)
+                added_count += 1
+                
+                # Start playing if this is the first track and nothing is currently playing
+                voice_client = interaction.guild.voice_client
+                if voice_client and not voice_client.is_playing() and not is_playing:
+                    await self._play_next(interaction.guild, interaction)
+                    is_playing = True
+                    
+                # Update progress message every 5 tracks or for important milestones
+                if (i + 1) % 5 == 0 or (i == len(album_tracks_page) - 1 and added_count > 0):
+                    status_embed.description = f"Added {added_count}/{len(album_tracks_page)} tracks to queue"
+                    status_embed.color = discord.Color.green() if i == len(album_tracks_page) - 1 else discord.Color.blue()
+                    await status_message.edit(embed=status_embed)
+                    
+            except Exception as e:
+                logger.error(f"Error processing album track: {e}")
+                # Continue with next track
 
+        # Final update with completion status
+        if added_count > 0:
+            status_embed.title = f"Album: {album_display} - Complete"
+            status_embed.description = f"Successfully added {added_count}/{len(album_tracks_page)} tracks to queue"
+            status_embed.color = discord.Color.green()
+            
+            # Add pagination info for next page if applicable
+            if page < max_pages:
+                status_embed.add_field(
+                    name="More Tracks", 
+                    value=f"Use `/play {url} page:{page+1}` for the next page",
+                    inline=False
+                )
+                
+            await status_message.edit(embed=status_embed)
+        else:
+            status_embed.title = f"Album Processing Failed"
+            status_embed.description = f"Could not add any tracks from the album"
+            status_embed.color = discord.Color.red()
+            await status_message.edit(embed=status_embed)
+                
+        return added_count > 0
+
+    async def _download_song(self, url: str) -> Optional[Song]:
+        """Download a song from YouTube using yt-dlp."""
         try:
-            # Check if cookie file exists before using it
+            # Create downloads directory if it doesn't exist
+            os.makedirs(os.path.dirname(YOUTUBE_COOKIES_WRITABLE), exist_ok=True)
+            
+            # Determine which cookies file to use
+            cookies_file = None
             if os.path.exists(YOUTUBE_COOKIES):
-                logger.info(f"Using YouTube cookies file for download: {YOUTUBE_COOKIES}")
+                try:
+                    # Make a writable copy of the cookies file
+                    shutil.copy2(YOUTUBE_COOKIES, YOUTUBE_COOKIES_WRITABLE)
+                    cookies_file = YOUTUBE_COOKIES_WRITABLE
+                    logger.info(f"Created writable copy of YouTube cookies at: {cookies_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to create writable cookies copy: {e}")
+            
+            # First fetch metadata using yt-dlp
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': 'downloads/%(title)s.%(ext)s',
+                'quiet': False,
+                'no_warnings': True,
+                'extract_flat': False,
+                'noplaylist': True,
+                # Only download audio stream
+                'format_sort': ['acodec:mp3:128'],
+                'postprocessor_args': ['-ar', '44100'],
+                'prefer_ffmpeg': True,
+            }
+            
+            # Add cookies file only if it exists
+            if cookies_file and os.path.exists(cookies_file):
+                logger.info(f"Using YouTube cookies file for download: {cookies_file}")
+                ydl_opts['cookiefile'] = cookies_file
             else:
-                logger.warning(f"YouTube cookies file not found at: {YOUTUBE_COOKIES}")
+                logger.warning(f"YouTube cookies file not available or not found")
                 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 logger.info(f"Downloading audio from: {url}")
@@ -926,16 +1515,6 @@ if __name__ == "__main__":
         if not BOT_TOKEN:
             logger.critical("DISCORD_BOT_TOKEN environment variable not set.")
             exit(1)
-        
-        # Log Cobalt availability
-        if COBALT_API_URL:
-            logger.info(f"Cobalt API configured at: {COBALT_API_URL}")
-            if COBALT_API_KEY and COBALT_API_KEY.strip():
-                logger.info("Cobalt API authentication configured")
-            else:
-                logger.info("Cobalt API authentication not configured")
-        else:
-            logger.warning("COBALT_API_URL not set. Will use yt-dlp only.")
             
         logger.info("Starting bot...")
         bot = MusicBot()
@@ -943,3 +1522,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception(f"Fatal error during bot startup: {e}")
         exit(1)
+

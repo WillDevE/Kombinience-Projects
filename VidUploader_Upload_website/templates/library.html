@@ -2,6 +2,9 @@
 
 {% block title %}My Videos - Kombini Video{% endblock %}
 
+{# Set a variable to hide the floating upload button from base.html since we have our own upload button #}
+{% set hide_floating_upload_button = True %}
+
 {% block content %}
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">

@@ -212,8 +212,10 @@ def index():
         
         # Return JSON if requested (for infinite scroll)
         if request.args.get('format') == 'json':
+            # Convert Row objects to regular lists for JSON serialization
+            serializable_videos = [list(video) for video in videos]
             return jsonify({
-                'videos': videos,
+                'videos': serializable_videos,
                 'total_pages': total_pages,
                 'current_page': page,
                 'aws_config': AWS_CONFIG
@@ -302,9 +304,9 @@ def upload():
         if file.filename == "":
             return jsonify({"error": "No file selected"}), 400
             
-        # Enhanced file validation
-        if not allowed_file(file.filename):
-            return jsonify({"error": "Invalid file type"}), 400
+        # Simple file extension check - only check if it ends with .mp4
+        if not file.filename.lower().endswith('.mp4'):
+            return jsonify({"error": "Only MP4 files are supported"}), 400
 
         # Sanitize and validate title with length limit
         title = bleach.clean(request.form.get("title", "Untitled Video"))[:100]
@@ -317,7 +319,7 @@ def upload():
         # Generate secure filename with hash
         filename = secure_filename_with_hash(file.filename)
         
-        # Create a temporary file to validate the video
+        # Create a temporary file to process
         temp_filepath = os.path.join("/tmp", filename)
         try:
             file.save(temp_filepath)
@@ -326,27 +328,31 @@ def upload():
             file_size = os.path.getsize(temp_filepath)
             if file_size > app.config['MAX_CONTENT_LENGTH']:
                 os.remove(temp_filepath)
-                return jsonify({"error": "File too large"}), 400
+                return jsonify({"error": f"File too large. Maximum size is {app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)}MB"}), 400
 
-            # Validate actual file type
-            if not validate_file_type(temp_filepath):
-                os.remove(temp_filepath)
-                return jsonify({"error": "Invalid file type"}), 400
-
-            # Get file size in bytes
             filesize = os.path.getsize(temp_filepath)
 
-            # Validate that it's actually a video file
-            if not is_valid_video(temp_filepath):
-                os.remove(temp_filepath)
-                return jsonify({"error": "Invalid video file"}), 400
-
-            metadata = extract_video_metadata(temp_filepath)
+            # Basic video metadata extraction with error handling
+            try:
+                metadata = extract_video_metadata(temp_filepath)
+            except Exception as e:
+                print(f"Metadata extraction error: {str(e)}")
+                # Continue with default metadata values if extraction fails
+                metadata = {"length": 0, "fps": 0, "resolution": "Unknown"}
             
-            # Generate thumbnail
+            # Generate thumbnail with basic error handling
             thumbnail_filename = f"thumb_{filename}.jpg"
             thumbnail_path = os.path.join("/tmp", thumbnail_filename)
-            generate_thumbnail(temp_filepath, thumbnail_path)
+            
+            try:
+                generate_thumbnail(temp_filepath, thumbnail_path)
+                if not os.path.exists(thumbnail_path) or os.path.getsize(thumbnail_path) == 0:
+                    raise Exception("Empty thumbnail generated")
+            except Exception as e:
+                print(f"Thumbnail generation error: {str(e)}")
+                # Use default placeholder instead
+                thumbnail_filename = "placeholder.jpg"
+                thumbnail_path = os.path.join("static", "img", thumbnail_filename)
             
             # Upload video to S3
             with open(temp_filepath, 'rb') as video_file:
@@ -354,17 +360,25 @@ def upload():
             
             if not video_url:
                 raise Exception("Failed to upload video to S3")
-                
-            # Upload thumbnail to S3
-            with open(thumbnail_path, 'rb') as thumb_file:
-                thumbnail_url = upload_to_s3(thumb_file, f"thumbnails/{thumbnail_filename}")
-                
-            if not thumbnail_url:
-                raise Exception("Failed to upload thumbnail to S3")
+            
+            # Upload thumbnail to S3 if it's not the default
+            if thumbnail_filename != "placeholder.jpg":
+                try:
+                    with open(thumbnail_path, 'rb') as thumb_file:
+                        thumbnail_url = upload_to_s3(thumb_file, f"thumbnails/{thumbnail_filename}")
+                    
+                    if not thumbnail_url:
+                        raise Exception("Failed to upload thumbnail to S3")
+                except Exception as e:
+                    print(f"Thumbnail upload error: {str(e)}")
+                    # Use default placeholder
+                    thumbnail_filename = "placeholder.jpg"
 
             # Clean up temporary files
-            os.remove(temp_filepath)
-            os.remove(thumbnail_path)
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            if os.path.exists(thumbnail_path) and thumbnail_filename != "placeholder.jpg":
+                os.remove(thumbnail_path)
 
             with sqlite3.connect(DATABASE) as conn:
                 c = conn.cursor()

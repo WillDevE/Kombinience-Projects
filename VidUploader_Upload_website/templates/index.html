@@ -7,11 +7,7 @@
     <div class="video-list">
         <div class="d-flex justify-content-between align-items-center mb-2">
             <h5>Recent Videos</h5>
-            {% if user %}
-            <button id="upload-btn" class="btn btn-sm btn-primary">
-                <i class="fas fa-upload me-1"></i> Upload
-            </button>
-            {% endif %}
+            <!-- Upload button moved to library page for consistency -->
         </div>
         
         <div id="video-list-container">
@@ -25,7 +21,7 @@
                          alt="{{ video[2] }}"
                          loading="lazy"
                          onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/placeholder.svg') }}'">
-                    <div class="video-duration">{{ '%d:%02d'|format(video[5]//60, video[5]%60) }}</div>
+                    <div class="video-duration">{{ '%d:%02d'|format(video[5]//60|int, video[5]%60|int) }}</div>
                 </div>
                 <div class="video-list-info">
                     <div class="video-list-title">{{ video[2] }}</div>
@@ -33,7 +29,7 @@
                         <small class="uploader-name" style="color: var(--primary);">{{ video[4] or 'Anonymous' }}</small>
                         <div class="d-flex justify-content-between align-items-end mt-1">
                             <small>{{ video[3] }}</small>
-                            <small class="text-muted">{{ (video[9]/1024/1024)|round(1) }} MB</small>
+                            <small class="file-size">{{ (video[9]/1024/1024)|round(1) }} MB</small>
                         </div>
                     </div>
                 </div>
@@ -158,7 +154,7 @@
                                      alt="${video[2]}"
                                      loading="lazy"
                                      onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/placeholder.svg') }}'">
-                                <div class="video-duration">${Math.floor(video[5]/60)}:${String(video[5]%60).padStart(2, '0')}</div>
+                                <div class="video-duration">${Math.floor(video[5]/60)}:${String(Math.floor(video[5]%60)).padStart(2, '0')}</div>
                             </div>
                             <div class="video-list-info">
                                 <div class="video-list-title">${video[2]}</div>
@@ -166,7 +162,7 @@
                                     <small class="uploader-name" style="color: var(--primary);">${video[4] || 'Anonymous'}</small>
                                     <div class="d-flex justify-content-between align-items-end mt-1">
                                         <small>${video[3]}</small>
-                                        <small class="text-muted">${(video[9]/1024/1024).toFixed(1)} MB</small>
+                                        <small class="file-size">${(video[9]/1024/1024).toFixed(1)} MB</small>
                                     </div>
                                 </div>
                             </div>
@@ -246,11 +242,28 @@
         // Initialize infinite scroll
         const videoList = document.querySelector('.video-list');
         if (videoList) {
+            // Add scroll event to the video list container
             videoList.addEventListener('scroll', function() {
                 if (this.scrollHeight - this.scrollTop - this.clientHeight < 100) {
                     loadMoreVideos();
                 }
             });
+            
+            // Add a debug message to verify scrolling is being detected
+            console.log('Infinite scroll initialized on video-list');
+            
+            // Add a check when videos are near the bottom of their container
+            function checkIfNearBottom() {
+                if (videoList.scrollHeight - videoList.scrollTop - videoList.clientHeight < 100) {
+                    loadMoreVideos();
+                }
+            }
+            
+            // Check periodically if we need to load more videos (handles case where scroll events might not fire)
+            setInterval(checkIfNearBottom, 2000);
+            
+            // Also check when window resizes in case layout changes
+            window.addEventListener('resize', checkIfNearBottom);
         }
         
         // Initialize lazy loading for initial thumbnails
@@ -277,6 +290,13 @@
 
 {% block styles %}
 <style>
+    /* Make video list properly scrollable with fixed height */
+    .video-list {
+        max-height: 600px;
+        overflow-y: auto;
+        padding-right: 10px;
+    }
+    
     /* Make active video more prominent */
     .video-list-item.active {
         border-color: var(--primary);
@@ -290,9 +310,15 @@
         margin-bottom: 2px;
     }
     
+    /* File size styling - make it more visible on dark background */
+    .file-size {
+        color: #a6e3ff !important;
+        font-weight: 500;
+    }
+    
     /* Add Bootstrap CSS variable overrides globally */
     :root {
         --bs-btn-color: #c3c3c3 !important;
     }
 </style>
-{% endblock %} 
+{% endblock %}

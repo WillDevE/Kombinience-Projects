@@ -1,7 +1,16 @@
-discord.py
-aiohttp
-yt-dlp
-PyNaCl
-fake-useragent
-playwright
-python-dotenv 
+# Discord and core requirements
+discord.py>=2.0.0
+aiohttp>=3.8.0
+PyNaCl>=1.5.0  # For voice support
+python-dotenv>=0.21.0
+
+# Audio processing
+yt-dlp>=2023.3.4
+ffmpeg-python>=0.2.0
+
+# Spotify support
+spotipy>=2.22.0
+spotify-dlp==2.2.0  # Specific version required
+
+# Utilities
+fake-useragent>=0.1.11 

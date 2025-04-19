@@ -11,10 +11,17 @@ services:
       - ./logs:/app/logs
       - ./downloads:/app/downloads
       - ./youtube_cookies.txt:/app/youtube_cookies.txt
+      - ./.spotify-cache:/root/.spotify-dlp
     environment:
       - TZ=UTC
     env_file:
       - .env
-    # The extra_hosts setting helps Docker connect to host machine services
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Resource constraints to prevent container from using too much system resources
+    mem_limit: 2G
+    memswap_limit: 2G
+    # Healthcheck to monitor container health
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.path.exists('/app/logs')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
