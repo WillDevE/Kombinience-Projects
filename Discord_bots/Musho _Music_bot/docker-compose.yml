@@ -7,13 +7,21 @@ services:
       dockerfile: Dockerfile
     container_name: discord-musicbot
     restart: unless-stopped
+    privileged: true
     volumes:
       - ./logs:/app/logs
       - ./downloads:/app/downloads
       - ./youtube_cookies.txt:/app/youtube_cookies.txt
       - ./.spotify-cache:/root/.spotify-dlp
+      - ./templates:/app/templates
+      - ./static:/app/static
+      - ./data:/app/data
+    ports:
+      - "80:80"
     environment:
       - TZ=UTC
+      - DASHBOARD_PORT=80
+      - DASHBOARD_URL_PREFIX=/musho
     env_file:
       - .env
     # Resource constraints to prevent container from using too much system resources

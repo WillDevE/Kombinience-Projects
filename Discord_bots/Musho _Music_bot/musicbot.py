@@ -686,7 +686,8 @@ class MusicBot(commands.Bot):
         
         # Dashboard settings
         self.dashboard_enabled = True
-        self.dashboard_port = int(os.getenv("DASHBOARD_PORT", "5000"))
+        self.dashboard_port = int(os.getenv("DASHBOARD_PORT", "80"))
+        self.dashboard_url_prefix = os.getenv("DASHBOARD_URL_PREFIX", "/musho")
         self.dashboard_thread = None
 
     async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -733,10 +734,11 @@ class MusicBot(commands.Bot):
                 # Start dashboard in background
                 self.dashboard_thread = start_dashboard(
                     host='0.0.0.0', 
-                    port=self.dashboard_port, 
+                    port=self.dashboard_port,
+                    url_prefix=self.dashboard_url_prefix,
                     debug=False
                 )
-                logger.info(f"Web dashboard started on http://localhost:{self.dashboard_port}/")
+                logger.info(f"Web dashboard started on http://localhost:{self.dashboard_port}{self.dashboard_url_prefix}/")
             except Exception as e:
                 logger.error(f"Failed to start dashboard: {e}")
                 self.dashboard_enabled = False

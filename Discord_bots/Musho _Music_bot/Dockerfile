@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create necessary directories with appropriate permissions
-RUN mkdir -p /app/downloads /app/logs && \
-    chmod -R 777 /app/downloads /app/logs
+RUN mkdir -p /app/downloads /app/logs /app/templates /app/static /app/data && \
+    chmod -R 777 /app/downloads /app/logs /app/data
 
 # Install Python dependencies first (for better caching)
 COPY requirements.txt .
@@ -29,6 +29,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY *.py .
 COPY *.mp3 .
+COPY templates/ templates/
+COPY static/ static/
+
+# Expose dashboard port
+EXPOSE 80
 
 # Command to run the bot
 CMD ["python", "musicbot.py"]

@@ -11,6 +11,11 @@ app = Flask(__name__,
     template_folder="templates"
 )
 
+# Set URL prefix for all routes to /musho
+app.config['APPLICATION_ROOT'] = '/musho'
+# Make sure URL generation works with the prefix
+app.config['PREFERRED_URL_SCHEME'] = 'http'
+
 # Make sure these functions are properly exposed for import
 __all__ = ['register_bot', 'record_song_played', 'start_dashboard']
 
@@ -586,7 +591,7 @@ def auto_save_task():
         save_dashboard_data()
 
 # Start the dashboard server
-def start_dashboard(host='0.0.0.0', port=5000, debug=False):
+def start_dashboard(host='0.0.0.0', port=80, url_prefix='/musho', debug=False):
     """Start the dashboard web server in a separate thread"""
     # First load any saved data
     load_dashboard_data()
@@ -603,12 +608,22 @@ def start_dashboard(host='0.0.0.0', port=5000, debug=False):
         app.run(host=host, port=port, debug=debug)
     else:
         # In production, run in a separate thread
+        from werkzeug.middleware.dispatcher import DispatcherMiddleware
+        from werkzeug.serving import run_simple
+        
+        # Create application with URL prefix
+        application = DispatcherMiddleware(
+            app=lambda environ, start_response: start_response('404 Not Found', [('Content-Type', 'text/plain')]),
+            mounts={url_prefix: app}
+        )
+            
         def run_app():
-            app.run(host=host, port=port, debug=False, use_reloader=False)
+            # Note: In production, we expect this to be run with sudo
+            run_simple(hostname=host, port=port, application=application, use_reloader=False)
             
         dashboard_thread = threading.Thread(target=run_app, daemon=True)
         dashboard_thread.start()
-        logger.info(f"Dashboard started on http://{host}:{port}/")
+        logger.info(f"Dashboard started on http://{host}:{port}{url_prefix}/")
         
         return dashboard_thread
 

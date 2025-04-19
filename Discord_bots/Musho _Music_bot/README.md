@@ -8,6 +8,7 @@ A Discord music bot that can play audio from YouTube and directly download from 
 - Direct download and playback from Spotify (tracks, playlists, albums)
 - Queue management
 - Skip, pause, and resume functionality
+- Web dashboard for monitoring playback and statistics
 
 ## Setup
 
@@ -32,6 +33,10 @@ SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
 # Bot Configuration
 DEFAULT_VOLUME=0.2
 MAX_SONG_LENGTH=900  # 15 minutes in seconds
+
+# Dashboard Configuration
+DASHBOARD_PORT=80
+DASHBOARD_URL_PREFIX=/musho
 ```
 
 5. Install dependencies: `pip install -r requirements.txt`
@@ -68,4 +73,12 @@ The bot can play from these Spotify URLs:
 - Playlists: `https://open.spotify.com/playlist/...`
 - Albums: `https://open.spotify.com/album/...`
 
-For playlists and albums, the bot will add up to 25 tracks to the queue to avoid overwhelming the system. 
+For playlists and albums, the bot will add up to 25 tracks to the queue to avoid overwhelming the system.
+
+## Web Dashboard
+
+The bot includes a web dashboard accessible at `http://your-server/musho/` that provides:
+
+- Real-time playback information
+- Guild statistics and history
+- Song play history and analytics 
