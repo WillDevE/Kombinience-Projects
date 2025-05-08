@@ -18,6 +18,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize song progress timers
     initSongProgressTimers();
     
+    // Initialize Navbar functionality
+    setupNavbar();
+    
     // Update song progress and uptime every second
     setInterval(updateDynamicElements, 1000);
 });
@@ -179,17 +182,14 @@ function updateSongHistory(songs) {
     const songList = document.querySelector('#history .song-list');
     if (!songList) return;
     
-    // Only update if there are new songs
-    const firstSongTimestamp = songList.querySelector('.song-item .song-meta');
-    if (firstSongTimestamp && songs[0] && firstSongTimestamp.textContent.includes(songs[0].timestamp)) {
-        return; // No new songs
-    }
+    // Removed check that compared only the first song's timestamp
+    // Always update if song_history data is provided
     
     // Clear and rebuild song list
     songList.innerHTML = '';
     
-    // Add up to 8 songs
-    songs.slice(0, 8).forEach(song => {
+    // Add up to 10 songs
+    songs.slice(0, 10).forEach(song => {
         const songItem = document.createElement('div');
         songItem.className = 'song-item';
         
@@ -308,8 +308,8 @@ function updateTopSongs(songs) {
     // Clear and rebuild top songs list
     topList.innerHTML = '';
     
-    // Add songs (up to 8)
-    songs.slice(0, 8).forEach(song => {
+    // Add songs (up to 10)
+    songs.slice(0, 10).forEach(song => {
         const songItem = document.createElement('div');
         songItem.className = 'song-item';
         
@@ -402,41 +402,39 @@ function updateGuildCards(guildStats) {
             // Create initial song container (no-song state)
             const noSongContainer = document.createElement('div');
             noSongContainer.className = 'current-song no-song';
+            
+            // Set background image using guild icon URL from the fetched data
+            const iconUrl = guild.icon_url ? guild.icon_url : '/static/images/default_guild_icon.png'; // Use fallback
+            noSongContainer.style.backgroundImage = `url('${iconUrl}')`;
+            
+            // Add only the status indicator
             noSongContainer.innerHTML = `
+                <div class="guild-name">${guild.name}</div>
                 <div class="current-song-status">
                     <div class="current-song-label">
                         <i class="fas fa-pause-circle"></i> Not Playing
                     </div>
                 </div>
-                <div class="current-song-details">
-                    <div class="song-title">
-                        <a href="#">Ready to play music!</a>
-                    </div>
-                    <div class="song-meta">
-                        <i class="fas fa-info-circle"></i> Use /play to start a song
-                    </div>
-                </div>
             `;
-            guildCard.appendChild(noSongContainer);
             
             // Create guild stats container
-            const guildStats = document.createElement('div');
-            guildStats.className = 'guild-stats';
-            guildStats.innerHTML = `
+            const guildStatsDiv = document.createElement('div');
+            guildStatsDiv.className = 'guild-stats';
+            guildStatsDiv.innerHTML = `
                 <div class="guild-stat">
+                    <i class="fas fa-users" title="Members"></i>
                     <div class="guild-stat-value">${guild.member_count}</div>
-                    <div class="guild-stat-label">Members</div>
                 </div>
                 <div class="guild-stat">
+                    <i class="fas fa-music" title="Songs Played"></i>
                     <div class="guild-stat-value">${guild.songs_played}</div>
-                    <div class="guild-stat-label">Songs Played</div>
                 </div>
                 <div class="guild-stat">
+                    <i class="fas fa-list-ol" title="Queue Length"></i>
                     <div class="guild-stat-value">${guild.queue_length}</div>
-                    <div class="guild-stat-label">Queue Length</div>
                 </div>
             `;
-            guildCard.appendChild(guildStats);
+            guildCard.appendChild(guildStatsDiv);
             
             // Add the new card to the list
             guildList.appendChild(guildCard);
@@ -475,7 +473,8 @@ function updateGuildCards(guildStats) {
                 // Create new container with the right class
                 currentSongContainer = document.createElement('div');
                 currentSongContainer.className = 'current-song with-image';
-                currentSongContainer.style.setProperty('--song-bg-image', `url('${guild.current_song.thumbnail}')`);
+                // Set background image directly
+                currentSongContainer.style.backgroundImage = `url('${guild.current_song.thumbnail}')`; 
                 
                 // Set the start time data attribute for progress tracking
                 if (guild.current_song.start_time_unix) {
@@ -498,6 +497,7 @@ function updateGuildCards(guildStats) {
                 
                 // Create the inner HTML structure for playing status
                 const songHTML = `
+                    <div class="guild-name">${guild.name}</div>
                     <div class="current-song-status">
                         <div class="current-song-label">
                             <i class="fas fa-play-circle"></i> Now Playing
@@ -536,7 +536,8 @@ function updateGuildCards(guildStats) {
                 const titleEl = currentSongContainer.querySelector('.song-title a');
                 if (titleEl && titleEl.textContent !== guild.current_song.title) {
                     // Song has changed, update the container
-                    currentSongContainer.style.setProperty('--song-bg-image', `url('${guild.current_song.thumbnail}')`);
+                    // Update background image directly
+                    currentSongContainer.style.backgroundImage = `url('${guild.current_song.thumbnail}')`; 
                     
                     // Update song title and link
                     titleEl.href = guild.current_song.url;
@@ -586,26 +587,25 @@ function updateGuildCards(guildStats) {
             // Create a new "no-song" container
             const noSongContainer = document.createElement('div');
             noSongContainer.className = 'current-song no-song';
+            
+            // Set background image using guild icon URL from the fetched data
+            const iconUrl = guild.icon_url ? guild.icon_url : '/static/images/default_guild_icon.png'; // Use fallback
+            noSongContainer.style.backgroundImage = `url('${iconUrl}')`;
+            
+            // Add only the status indicator
             noSongContainer.innerHTML = `
+                <div class="guild-name">${guild.name}</div>
                 <div class="current-song-status">
                     <div class="current-song-label">
                         <i class="fas fa-pause-circle"></i> Not Playing
                     </div>
                 </div>
-                <div class="current-song-details">
-                    <div class="song-title">
-                        <a href="#">Ready to play music!</a>
-                    </div>
-                    <div class="song-meta">
-                        <i class="fas fa-info-circle"></i> Use /play to start a song
-                    </div>
-                </div>
             `;
             
             // Add the new container before the guild stats
-            const guildStats = guildCard.querySelector('.guild-stats');
-            if (guildStats) {
-                guildCard.insertBefore(noSongContainer, guildStats);
+            const guildStatsEl = guildCard.querySelector('.guild-stats'); // Renamed variable to avoid conflict
+            if (guildStatsEl) {
+                guildCard.insertBefore(noSongContainer, guildStatsEl);
             } else {
                 guildCard.appendChild(noSongContainer);
             }
@@ -619,5 +619,50 @@ function updateGuildCards(guildStats) {
         if (!processedGuildIds.has(cardGuildId)) {
             card.remove();
         }
+    });
+}
+
+// Function to setup navbar interactions
+function setupNavbar() {
+    const mobileToggle = document.querySelector('.mobile-toggle');
+    const navLinksContainer = document.querySelector('.nav-links');
+    const navLinks = document.querySelectorAll('.nav-link');
+    const contentSections = document.querySelectorAll('.content-section');
+
+    // Mobile toggle functionality
+    if (mobileToggle && navLinksContainer) {
+        mobileToggle.addEventListener('click', () => {
+            navLinksContainer.classList.toggle('show');
+        });
+    }
+
+    // Desktop/Mobile link click functionality
+    navLinks.forEach(link => {
+        link.addEventListener('click', (event) => {
+            event.preventDefault();
+            const targetId = link.getAttribute('data-target');
+            
+            // Hide all content sections
+            contentSections.forEach(section => {
+                section.style.display = 'none';
+                section.classList.remove('active');
+            });
+            
+            // Show the target section
+            const targetSection = document.getElementById(targetId);
+            if (targetSection) {
+                targetSection.style.display = 'block';
+                targetSection.classList.add('active');
+            }
+            
+            // Update active link state
+            navLinks.forEach(navLink => navLink.classList.remove('active'));
+            link.classList.add('active');
+            
+            // Hide mobile menu after clicking a link
+            if (navLinksContainer.classList.contains('show')) {
+                navLinksContainer.classList.remove('show');
+            }
+        });
     });
 }

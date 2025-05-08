@@ -9,6 +9,7 @@ import itertools
 import re
 import subprocess
 import urllib.parse
+import time
 
 import discord
 import aiohttp
@@ -22,7 +23,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
 # Import dashboard module
-from dashboard import register_bot, record_song_played, start_dashboard
+from dashboard import register_bot, record_song_played, start_dashboard, update_stats, save_dashboard_data
 
 # Load environment variables
 load_dotenv()
@@ -47,6 +48,10 @@ DEFAULT_VOLUME = float(os.getenv("DEFAULT_VOLUME", "0.2"))
 MAX_SONG_LENGTH = int(os.getenv("MAX_SONG_LENGTH", "7200"))  # 120 minutes in seconds
 # Proxy URL (if needed)
 PROXY_URL = os.getenv("PROXY_URL")
+
+# New constants for download queue management
+MAX_SONGS_IN_DOWNLOAD_BUFFER = 10  # Max songs (downloaded + downloading) per guild
+DOWNLOAD_WORKER_CHECK_INTERVAL = 1 # Seconds for worker loop
 
 # Spotify Configuration
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -235,7 +240,31 @@ class SpotifyClient:
         try:
             # Create a unique download directory for this track with proper permissions
             download_dir = os.path.join(os.getcwd(), "downloads", "spotify")
-            os.makedirs(download_dir, exist_ok=True)
+            
+            # Ensure all parent directories exist with proper permissions
+            try:
+                # First ensure downloads directory exists
+                os.makedirs(os.path.join(os.getcwd(), "downloads"), exist_ok=True)
+                # Then create spotify subdirectory
+                os.makedirs(download_dir, exist_ok=True)
+                
+                # Check if directory is writable
+                if not os.access(download_dir, os.W_OK):
+                    logger.warning(f"Directory {download_dir} exists but is not writable. Trying to fix permissions.")
+                    # Try to make the directory writable
+                    os.chmod(download_dir, 0o755)  # rwxr-xr-x
+                    
+                    # Check again
+                    if not os.access(download_dir, os.W_OK):
+                        # If still not writable, fallback to temp directory
+                        import tempfile
+                        download_dir = tempfile.mkdtemp(prefix="musho_spotify_")
+                        logger.warning(f"Using temporary directory for downloads: {download_dir}")
+            except PermissionError as pe:
+                # If permission error persists, use system temp directory
+                import tempfile
+                download_dir = tempfile.mkdtemp(prefix="musho_spotify_")
+                logger.warning(f"Permission error creating directory. Using temporary directory: {download_dir}")
             
             # Get track metadata using spotipy
             track_id = self.get_track_id(url)
@@ -267,24 +296,21 @@ class SpotifyClient:
                                                            .replace('?', '_').replace('"', '_') \
                                                            .replace('<', '_').replace('>', '_') \
                                                            .replace('|', '_')
-            output_filepath = os.path.join(download_dir, f"{safe_filename}.mp3")
             
             # The key insight from spotify-dlp: use YouTube Music search with the track details
             yt_search_url = f"https://music.youtube.com/search?q={spotify_item.keywords}#songs"
             logger.info(f"Searching YouTube Music for: {track_artist} - {track_title}")
             
-            # Determine which cookies file to use
             cookies_file = None
             if os.path.exists(YOUTUBE_COOKIES):
                 try:
-                    # Make a writable copy of the cookies file
                     shutil.copy2(YOUTUBE_COOKIES, YOUTUBE_COOKIES_WRITABLE)
                     cookies_file = YOUTUBE_COOKIES_WRITABLE
                     logger.info(f"Created writable copy of YouTube cookies at: {cookies_file}")
                 except Exception as e:
                     logger.warning(f"Failed to create writable cookies copy: {e}")
             
-            # Configure yt-dlp with our existing setup, but targeting the output file
+            # Configure yt-dlp with our existing setup
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'postprocessors': [{
@@ -410,27 +436,45 @@ class SpotifyClient:
             playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
             
             # Calculate pagination
-            start_index = (page - 1) * max_tracks
-            end_index = page * max_tracks
+            max_tracks = 100
+            start_track = (page - 1) * max_tracks + 1
             
-            # Get tracks using the items_by_url method
-            spotify_items = self.items_by_url(playlist_url)
-            if not spotify_items:
-                logger.error(f"Could not fetch tracks for playlist: {playlist_id}")
-                return []
+            # Get all tracks metadata first
+            playlist_tracks = await self.get_playlist_tracks(playlist_id)
+            if not playlist_tracks:
+                embed = discord.Embed(
+                    title="No Tracks Found",
+                    description=f"No tracks found in playlist.",
+                    color=discord.Color.red()
+                )
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                return False
                 
             # Apply pagination
-            spotify_items = spotify_items[start_index:end_index]
+            start_idx = (page - 1) * max_tracks
+            end_idx = min(start_idx + max_tracks, len(playlist_tracks))
+            playlist_tracks_page = playlist_tracks[start_idx:end_idx]
             
-            if not spotify_items:
-                logger.error(f"No tracks found for playlist page {page}")
-                return []
+            if not playlist_tracks_page:
+                embed = discord.Embed(
+                    title="No Tracks Found",
+                    description=f"Page {page} has no tracks.",
+                    color=discord.Color.red()
+                )
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                return False
             
-            logger.info(f"Processing {len(spotify_items)} tracks from playlist '{playlist_name}' (page {page})")
+            logger.info(f"Processing {len(playlist_tracks_page)} tracks from playlist '{playlist_name}' (page {page})")
             
             # Download each track individually
             downloaded_songs = []
-            for item in spotify_items:
+            for item in playlist_tracks_page:
                 try:
                     song = await self.download_track(item.url)
                     if song:
@@ -471,23 +515,45 @@ class SpotifyClient:
             album_url = f"https://open.spotify.com/album/{album_id}"
             
             # Calculate pagination
-            start_index = (page - 1) * max_tracks
-            end_index = page * max_tracks
+            max_tracks = 100
+            start_track = (page - 1) * max_tracks + 1
             
-            # Get tracks using the items_by_url method
-            spotify_items = self.items_by_url(album_url)
-            if not spotify_items:
-                logger.error(f"Could not fetch tracks for album: {album_id}")
-                return []
+            # Calculate total number of pages
+            total_tracks = len(await self.get_album_tracks(album_id))
+            max_pages = (total_tracks + max_tracks - 1) // max_tracks  # Ceiling division
+            
+            # Get all album tracks first
+            album_tracks = await self.get_album_tracks(album_id)
+            if not album_tracks:
+                embed = discord.Embed(
+                    title="No Tracks Found",
+                    description=f"No tracks found in album.",
+                    color=discord.Color.red()
+                )
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                return False
                 
             # Apply pagination
-            spotify_items = spotify_items[start_index:end_index]
+            start_idx = (page - 1) * max_tracks
+            end_idx = min(start_idx + max_tracks, len(album_tracks))
+            album_tracks_page = album_tracks[start_idx:end_idx]
             
-            if not spotify_items:
-                logger.error(f"No tracks found for album page {page}")
-                return []
+            if not album_tracks_page:
+                embed = discord.Embed(
+                    title="No Tracks Found",
+                    description=f"Page {page} has no tracks.",
+                    color=discord.Color.red()
+                )
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                return False
             
-            logger.info(f"Processing {len(spotify_items)} tracks from album '{album_name}' (page {page})")
+            logger.info(f"Processing {len(album_tracks_page)} tracks from album '{album_name}' (page {page})")
             
             # Get album images for thumbnail
             album_image = None
@@ -496,7 +562,7 @@ class SpotifyClient:
             
             # Download each track individually
             downloaded_songs = []
-            for item in spotify_items:
+            for item in album_tracks_page:
                 try:
                     song = await self.download_track(item.url)
                     if song:
@@ -526,76 +592,285 @@ class SpotifyClient:
 
 class QueueManager:
     def __init__(self):
-        self.queues = defaultdict(list)
+        self.playback_queues = defaultdict(list)  # Stores Song objects ready for playback
+        self.download_pipelines = defaultdict(asyncio.Queue)  # Stores (url, interaction, is_spotify, spotify_info_dict)
+        self.active_downloads = defaultdict(dict)  # guild_id -> {url_or_unique_id: asyncio.Task}
+        self.guild_download_workers = {} # guild_id -> asyncio.Task for _process_download_pipeline
+
         self.current_songs = {}
         self.file_use_count = defaultdict(int)
-        self._queue_locks = defaultdict(asyncio.Lock)
-        self._download_tasks = {}  # Track download tasks per guild
-        self.download_queue = {}   # Track songs pending download
+        self._queue_locks = defaultdict(asyncio.Lock) # Protects playback_queues and current_songs
+        self._pipeline_locks = defaultdict(asyncio.Lock) # Protects download_pipelines and active_downloads
         self._cleanup_tasks = set()  # Track cleanup tasks
 
-    async def add_song(self, guild_id: int, song: Song) -> None:
-        async with self._queue_locks[guild_id]:
-            self.queues[guild_id].append(song)
-            self.file_use_count[song.filename] += 1
-            # Start pre-downloading next songs if needed
-            await self._schedule_downloads(guild_id)
+    async def submit_for_download(self, guild_id: int, url: str, interaction: discord.Interaction, is_spotify: bool = False, spotify_info: Optional[Dict] = None) -> None:
+        """Adds a song request to the download pipeline and ensures the worker is running."""
+        await self.download_pipelines[guild_id].put((url, interaction, is_spotify, spotify_info))
+        logger.info(f"Submitted {url} to download pipeline for guild {guild_id}")
+        await self._ensure_download_worker_running(guild_id)
 
-    async def remove_song(self, guild_id: int, index: int) -> Optional[Song]:
+    async def _ensure_download_worker_running(self, guild_id: int) -> None:
+        """Ensures the download worker task for a guild is running if not already."""
+        async with self._pipeline_locks[guild_id]:
+            if guild_id not in self.guild_download_workers or self.guild_download_workers[guild_id].done():
+                logger.info(f"Starting download worker for guild {guild_id}")
+                self.guild_download_workers[guild_id] = asyncio.create_task(self._process_download_pipeline(guild_id))
+                # Clean up reference to old task if it exists and is done
+                if guild_id in self.guild_download_workers and self.guild_download_workers[guild_id].done():
+                    del self.guild_download_workers[guild_id]
+
+    async def _process_download_pipeline(self, guild_id: int) -> None:
+        """Processes songs from the download pipeline, respecting buffer limits."""
+        # Ensure we have the bot instance correctly.
+        # self.bot should be set when QueueManager is initialized by MusicBot
+        if not hasattr(self, 'bot') or not self.bot:
+            logger.error(f"Bot instance not available in QueueManager for guild {guild_id}. Worker stopping.")
+            # No need to continue if we can't access the bot
+            if guild_id in self.guild_download_workers:
+               del self.guild_download_workers[guild_id]
+            return
+
+        while True:
+            can_download_more = False
+            async with self._queue_locks[guild_id]: # Lock for reading playback_queues length
+                async with self._pipeline_locks[guild_id]: # Lock for active_downloads and download_pipelines
+                    if not self.download_pipelines[guild_id].empty() and \
+                       (len(self.playback_queues[guild_id]) + len(self.active_downloads[guild_id])) < MAX_SONGS_IN_DOWNLOAD_BUFFER:
+                        can_download_more = True
+            
+            if not can_download_more:
+                # If pipeline is empty and no active downloads, worker can stop.
+                async with self._pipeline_locks[guild_id]:
+                    if self.download_pipelines[guild_id].empty() and not self.active_downloads[guild_id]:
+                        logger.info(f"Download pipeline empty and no active downloads for guild {guild_id}. Worker stopping.")
+                        if guild_id in self.guild_download_workers: # Check if key exists
+                           del self.guild_download_workers[guild_id]
+                        return 
+                await asyncio.sleep(DOWNLOAD_WORKER_CHECK_INTERVAL)
+                continue
+
+            url, interaction, is_spotify, spotify_info = await self.download_pipelines[guild_id].get()
+            unique_download_id = url # Or generate a more unique ID if needed
+
+            async with self._pipeline_locks[guild_id]:
+                if unique_download_id in self.active_downloads[guild_id]:
+                    logger.warning(f"Download for {url} already active in guild {guild_id}. Skipping.")
+                    self.download_pipelines[guild_id].task_done()
+                    continue
+            
+            download_task = None
+            song_object = None
+            try:
+                logger.info(f"Starting download for {url} in guild {guild_id}")
+                if is_spotify:
+                    download_task = asyncio.create_task(self.bot.spotify_client.download_track(url))
+                else:
+                    download_task = asyncio.create_task(self.bot._download_song(url))
+                
+                async with self._pipeline_locks[guild_id]:
+                    self.active_downloads[guild_id][unique_download_id] = download_task
+
+                song_object = await download_task
+
+            except Exception as e:
+                logger.error(f"Error downloading {url} in guild {guild_id}: {e}", exc_info=True)
+                current_interaction = interaction # Use the interaction passed to the worker item
+                if current_interaction and not current_interaction.response.is_done():
+                    try:
+                        await current_interaction.followup.send(f"❌ Failed to download: {url}. Error: {str(e)[:1000]}", ephemeral=True)
+                    except discord.errors.NotFound:
+                        logger.warning("Interaction not found for download error message.")
+                    except discord.errors.HTTPException as http_e:
+                        logger.warning(f"HTTPException sending download error (likely already responded): {http_e}")
+                # No else for sending to channel here, as it might not be appropriate for background task errors.
+            finally:
+                async with self._pipeline_locks[guild_id]:
+                    if unique_download_id in self.active_downloads[guild_id]:
+                        del self.active_downloads[guild_id][unique_download_id]
+                self.download_pipelines[guild_id].task_done()
+
+            if song_object:
+                logger.info(f"Successfully downloaded {song_object.title} for guild {guild_id}")
+                await self._add_to_playback_queue(guild_id, song_object, interaction)
+                
+                # Check if playback should start
+                # This requires access to the bot (self.bot) or MusicBot instance
+                guild = self.bot.get_guild(guild_id)
+                if guild and guild.voice_client and not guild.voice_client.is_playing():
+                     # Critical: _play_next needs the interaction object for the *first* song being played,
+                     # not necessarily the interaction of the song that just finished downloading.
+                     # This logic needs careful handling. For now, pass the current song's interaction.
+                    await self.bot._play_next(guild, interaction)
+            
+            await asyncio.sleep(0.1) # Brief yield
+
+    async def _add_to_playback_queue(self, guild_id: int, song: Song, interaction: Optional[discord.Interaction]) -> None:
+        """Adds a downloaded song to the playback queue and updates use count."""
         async with self._queue_locks[guild_id]:
-            if not self.queues[guild_id]:
+            self.playback_queues[guild_id].append(song)
+            self.file_use_count[song.filename] += 1
+        
+        logger.info(f"Added '{song.title}' to playback queue for guild {guild_id}. Position: {len(self.playback_queues[guild_id])}")
+        
+        # Send confirmation if interaction is provided (for individually added songs)
+        # Playlist/album additions might have a summary message instead.
+        if interaction and not interaction.response.is_done(): # Check if response is done
+            # Check if this is from a playlist addition to avoid spamming messages
+            is_playlist_song = song.playlist_info is not None
+
+            if not is_playlist_song or (is_playlist_song and len(self.playback_queues[guild_id]) == 1 and not interaction.guild.voice_client.is_playing()):
+                # Only send detailed "Track Added" if not part of a bulk add or if it's the first to start playing
+                # This logic might need refinement based on how playlist messages are handled
+                position = len(self.playback_queues[guild_id])
+                embed = discord.Embed(
+                    title="Track Added to Queue",
+                    description=f"[{song.title}]({song.url}) (Position: {position})",
+                    color=discord.Color.green()
+                )
+                if song.thumbnail:
+                    embed.set_thumbnail(url=song.thumbnail)
+                embed.add_field(name="Duration", value=song.duration)
+                try:
+                    # If original processing message exists, edit it. Otherwise, send new.
+                    # This requires passing the original processing_message or finding it.
+                    # For simplicity, sending a new followup if the original interaction is still valid.
+                    await interaction.followup.send(embed=embed)
+                except discord.errors.NotFound:
+                     logger.warning(f"Interaction for adding {song.title} not found, can't send followup.")
+                except discord.errors.InteractionResponded:
+                     logger.info(f"Interaction for {song.title} already responded, sending to channel.")
+                     await interaction.channel.send(embed=embed)
+
+    async def get_next_song(self, guild_id: int) -> Optional[Song]:
+        """Gets the next song from the playback queue and updates current_song."""
+        async with self._queue_locks[guild_id]:
+            if not self.playback_queues[guild_id]:
+                self.current_songs.pop(guild_id, None)
                 return None
-            song = self.queues[guild_id].pop(index)
-            # Cancel any pending download for this song
-            if guild_id in self._download_tasks:
-                self._download_tasks[guild_id] = [
-                    task for task in self._download_tasks[guild_id]
-                    if task.get_name() != song.filename
-                ]
+            song = self.playback_queues[guild_id].pop(0)
+            self.current_songs[guild_id] = song
             return song
 
     async def clear_guild_queue(self, guild_id: int) -> None:
+        """Clears all queues, cancels downloads, and cleans up resources for a guild."""
+        logger.info(f"Clearing queue and downloads for guild {guild_id}")
+        
+        try:
+            # Cancel active downloads with proper error handling
+            async with self._pipeline_locks[guild_id]:
+                if guild_id in self.active_downloads:
+                    for url, task in list(self.active_downloads[guild_id].items()): # Iterate over a copy
+                        try:
+                            if not task.done():
+                                task.cancel()
+                                logger.info(f"Cancelled download task for {url} in guild {guild_id}")
+                        except Exception as e:
+                            logger.error(f"Error cancelling task for {url}: {e}")
+                    self.active_downloads[guild_id].clear()
+
+                # Clear download pipeline
+                if guild_id in self.download_pipelines:
+                    while not self.download_pipelines[guild_id].empty():
+                        try:
+                            self.download_pipelines[guild_id].get_nowait()
+                            self.download_pipelines[guild_id].task_done()
+                        except asyncio.QueueEmpty:
+                            break
+                        except Exception as e:
+                            logger.error(f"Error clearing download pipeline: {e}")
+                            break
+                    logger.info(f"Cleared download pipeline for guild {guild_id}")
+
+            # Stop and clear download worker with proper error handling
+            async with self._pipeline_locks[guild_id]: # Ensure lock for worker dict
+                if guild_id in self.guild_download_workers:
+                    worker = self.guild_download_workers.pop(guild_id, None)
+                    try:
+                        if worker and not worker.done():
+                            worker.cancel()
+                            logger.info(f"Cancelled download worker for guild {guild_id}")
+                    except Exception as e:
+                        logger.error(f"Error cancelling download worker: {e}")
+            
+            # Clear playback queue and current song, cleanup files
+            async with self._queue_locks[guild_id]:
+                cleanup_tasks = []
+                # Use get() with default to avoid KeyErrors
+                for song in self.playback_queues.get(guild_id, []):
+                    cleanup_tasks.append(self.cleanup_file(song.filename)) # cleanup_file is async
+                
+                current_song = self.current_songs.pop(guild_id, None)
+                if current_song:
+                    cleanup_tasks.append(self.cleanup_file(current_song.filename))
+
+                # Clear the queue safely
+                if guild_id in self.playback_queues:
+                    self.playback_queues[guild_id].clear()
+                
+                if cleanup_tasks:
+                    await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                    logger.info(f"Scheduled cleanup for files in guild {guild_id}")
+
+            # Also reset any auto-leave timer for this guild
+            if hasattr(self.bot, 'alone_since_timestamps') and guild_id in self.bot.alone_since_timestamps:
+                del self.bot.alone_since_timestamps[guild_id]
+                logger.info(f"Reset auto-leave timer for guild {guild_id} due to queue clear.")
+
+            # Update dashboard statistics
+            try:
+                update_stats()
+            except Exception as e:
+                logger.error(f"Error updating stats after queue clear: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error clearing queue for guild {guild_id}: {e}", exc_info=True)
+
+    async def remove_song_from_playback_queue(self, guild_id: int, index: int) -> Optional[Song]:
+        """Removes a song from the playback queue by index."""
         async with self._queue_locks[guild_id]:
-            await self._cleanup_guild_resources(guild_id)
-            self.queues[guild_id].clear()
-            self.current_songs.pop(guild_id, None)
-            # Cancel all pending downloads
-            if guild_id in self._download_tasks:
-                for task in self._download_tasks[guild_id]:
-                    task.cancel()
-                self._download_tasks[guild_id] = []
+            if not self.playback_queues[guild_id] or not (0 <= index < len(self.playback_queues[guild_id])):
+                return None
+            song = self.playback_queues[guild_id].pop(index)
+            # Note: File cleanup for removed song should be handled here or by caller
+            # await self.cleanup_file(song.filename) # Decide if removal implies immediate cleanup
+            return song
 
-    async def _schedule_downloads(self, guild_id: int) -> None:
-        """Schedule pre-downloads for upcoming songs"""
-        if guild_id not in self._download_tasks:
-            self._download_tasks[guild_id] = []
+    async def add_song(self, guild_id: int, song: Song) -> None:
+        async with self._queue_locks[guild_id]:
+            self.playback_queues[guild_id].append(song) # Changed from self.queues
+            self.file_use_count[song.filename] += 1
+            # Pre-downloading is now handled by the download worker ensuring buffer is filled
+            await self._ensure_download_worker_running(guild_id)
 
-        # Clean up completed download tasks
-        self._download_tasks[guild_id] = [
-            task for task in self._download_tasks[guild_id]
-            if not task.done()
-        ]
-
-        # Schedule downloads for the next few songs that haven't been downloaded
-        for song in self.queues[guild_id][:3]:  # Pre-download next 3 songs
-            if not os.path.exists(song.filename):
-                # Check if download is already scheduled
-                if not any(task.get_name() == song.filename for task in self._download_tasks[guild_id]):
-                    task = asyncio.create_task(
-                        self._download_song(song.url),
-                        name=song.filename
-                    )
-                    self._download_tasks[guild_id].append(task)
+    async def remove_song(self, guild_id: int, index: int) -> Optional[Song]:
+        async with self._queue_locks[guild_id]:
+            if not self.playback_queues[guild_id]: # Changed from self.queues
+                return None
+            song = self.playback_queues[guild_id].pop(index) # Changed from self.queues
+            # Cancel any pending download for this song - This logic is now different.
+            # Downloads are managed by the pipeline. If a song is in playback_queues, it's already downloaded.
+            # If removing from download_pipelines is needed, that's a different function.
+            return song
 
     async def _cleanup_guild_resources(self, guild_id: int) -> None:
-        """Clean up all resources for a guild"""
-        cleanup_tasks = []
-        for song in self.queues[guild_id]:
-            cleanup_tasks.append(self.cleanup_file(song.filename))
-        
-        # Wait for all cleanup tasks to complete
-        if cleanup_tasks:
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        """Clean up all file resources for songs in the playback queue for a guild"""
+        try:
+            # This is mostly covered by clear_guild_queue's file cleanup logic.
+            # If called separately, it should iterate self.playback_queues.
+            cleanup_tasks = []
+            async with self._queue_locks[guild_id]:
+                # Use get with default to avoid KeyError
+                for song in self.playback_queues.get(guild_id, []):
+                    try:
+                        cleanup_tasks.append(self.cleanup_file(song.filename))
+                    except Exception as e:
+                        logger.error(f"Error scheduling cleanup for file {song.filename}: {e}")
+            
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                logger.info(f"Completed resource cleanup for guild {guild_id}")
+        except Exception as e:
+            logger.error(f"Error cleaning up resources for guild {guild_id}: {e}", exc_info=True)
 
     async def cleanup_file(self, filename: str) -> None:
         """Clean up a file when it's no longer needed"""
@@ -630,8 +905,6 @@ class QueueManager:
         except Exception as e:
             logger.error(f"Error in delayed file cleanup for {filename}: {e}")
 
-
-
 class MusicBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -642,8 +915,11 @@ class MusicBot(commands.Bot):
         
         super().__init__(command_prefix='/', intents=intents)
         self.queue_manager = QueueManager()
+        self.queue_manager.bot = self # Provide bot instance to QueueManager
         self.spotify_client = SpotifyClient()
+        self.spotify_client.bot = self # If SpotifyClient needs bot access, e.g. for config
         self.tree.on_error = self.on_tree_error
+        self.alone_since_timestamps = {} # For auto-leave feature
         
         # Set up download directories with proper permissions
         try:
@@ -691,6 +967,12 @@ class MusicBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to sync command tree: {e}")
 
+    async def close(self):
+        logger.info("Shutting down bot...")
+        save_dashboard_data()
+        logger.info("Dashboard data saved before shutdown.")
+        await super().close()
+
     async def on_ready(self):
         logger.info(f"Bot is ready and logged in as {self.user}")
         
@@ -727,9 +1009,82 @@ class MusicBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to start dashboard: {e}", exc_info=True)
                 self.dashboard_enabled = False
+        
+        # Track voice reconnection attempts to prevent infinite reconnection loops
+        self.reconnection_attempts = {}
+        self.MAX_RECONNECTION_ATTEMPTS = 3
             
         await self.change_presence(activity=discord.Game(name="your dog music fr"))
         self.presence_loop.start()
+        self.auto_leave_check.start() # Start the new auto-leave task
+        
+    async def on_voice_state_update(self, member, before, after):
+        """Handle voice state changes, including reconnection when disconnected."""
+        try:
+            # Only care about our own voice state changes
+            if member.id != self.user.id:
+                return
+                
+            # If we were in a voice channel but now we're not, it might be an unexpected disconnection
+            if before.channel and not after.channel:
+                guild_id = before.channel.guild.id
+                guild = before.channel.guild
+                
+                # Check if we should be in voice (queue not empty or active downloads)
+                should_reconnect = False
+                try:
+                    if guild_id in self.queue_manager.current_songs:
+                        should_reconnect = True
+                    elif self.queue_manager.playback_queues.get(guild_id, []):
+                        should_reconnect = True
+                    elif self.queue_manager.active_downloads.get(guild_id, {}):
+                        should_reconnect = True
+                except Exception as e:
+                    logger.error(f"Error checking if reconnection is needed: {e}")
+                
+                # Check if we've tried to reconnect too many times
+                current_time = time.time()
+                if should_reconnect:
+                    # Initialize or update reconnection attempts
+                    if guild_id not in self.reconnection_attempts:
+                        self.reconnection_attempts[guild_id] = {'count': 0, 'last_attempt': 0}
+                    
+                    # Reset counter if last attempt was more than 5 minutes ago
+                    if current_time - self.reconnection_attempts[guild_id]['last_attempt'] > 300:
+                        self.reconnection_attempts[guild_id]['count'] = 0
+                    
+                    # Increment counter and update timestamp
+                    self.reconnection_attempts[guild_id]['count'] += 1
+                    self.reconnection_attempts[guild_id]['last_attempt'] = current_time
+                    
+                    # Attempt reconnection if we haven't tried too many times
+                    if self.reconnection_attempts[guild_id]['count'] <= self.MAX_RECONNECTION_ATTEMPTS:
+                        logger.info(f"Unexpected disconnection detected. Attempting to reconnect to {before.channel.name} (attempt {self.reconnection_attempts[guild_id]['count']})...")
+                        try:
+                            # Try to reconnect to the same channel
+                            await before.channel.connect(timeout=10.0, reconnect=True)
+                            logger.info(f"Successfully reconnected to {before.channel.name}")
+                            
+                            # Resume playback if there was a current song
+                            if guild_id in self.queue_manager.current_songs:
+                                logger.info(f"Resuming playback after reconnection")
+                                await self._play_next(guild, None)  # Use None for interaction as this is automatic
+                        except Exception as e:
+                            logger.error(f"Failed to reconnect to voice channel: {e}")
+                    else:
+                        logger.warning(f"Reached maximum reconnection attempts ({self.MAX_RECONNECTION_ATTEMPTS}) for guild {guild_id}. Will not attempt further reconnections.")
+                        # Clear the current song and queue to prevent further reconnection attempts
+                        if guild_id in self.queue_manager.current_songs:
+                            current_song = self.queue_manager.current_songs.pop(guild_id, None)
+                            if current_song:
+                                await self.queue_manager.cleanup_file(current_song.filename)
+                        # Reset reconnection counter after giving up
+                        self.reconnection_attempts[guild_id]['count'] = 0
+                        
+            # Update dashboard stats after voice state change
+            update_stats()
+        except Exception as e:
+            logger.error(f"Error in voice_state_update handler: {e}", exc_info=True)
 
     async def setup_commands(self) -> None:
         """Register all music-related commands"""
@@ -743,55 +1098,48 @@ class MusicBot(commands.Bot):
                     await interaction.followup.send("Failed to join voice channel.")
                     return
 
-                # Check if it's a Spotify URL and handle it specially
-                if self.spotify_client.is_available() and self.spotify_client.is_spotify_url(url):
-                    logger.info(f"Detected Spotify URL: {url}")
-                    spotify_handled = await self._handle_spotify_url(url, interaction, page)
-                    if spotify_handled:
-                        return
-                    else:
-                        await interaction.followup.send("Failed to process Spotify URL. Please check your Spotify configuration.")
-                        return  # Don't attempt to process Spotify URLs with yt-dlp
-
                 # Send initial processing message
-                processing_embed = discord.Embed(
-                    title="Processing Track",
-                    description=f"Downloading from YouTube: {url}",
+                initial_embed = discord.Embed(
+                    title="Processing Request",
+                    description=f"Attempting to add to download queue: {url}",
                     color=discord.Color.blue()
                 )
-                processing_message = await interaction.followup.send(embed=processing_embed)
+                # Defer might have already been called, so try to send followup, or edit if a message exists
+                try:
+                    # Check if interaction is already responded to by defer()
+                    if not interaction.response.is_done():
+                         await interaction.response.send_message(embed=initial_embed, ephemeral=True)
+                    else: # If deferred, send a followup.
+                         await interaction.followup.send(embed=initial_embed, ephemeral=True) # Keep it ephemeral for now
+                except discord.errors.InteractionResponded:
+                     # If it's already responded in some other way, log it or try channel send
+                     logger.warning("Play command interaction already responded before initial message.")
+                     await interaction.channel.send(embed=initial_embed)
 
-                # Download the song
-                song = await self._download_song(url)
-                if not song:
-                    error_embed = discord.Embed(
-                        title="Download Failed",
-                        description="Failed to download the song.",
-                        color=discord.Color.red()
-                    )
-                    await processing_message.edit(embed=error_embed)
-                    return
+                # Check if it's a Spotify URL
+                if self.spotify_client.is_available() and self.spotify_client.is_spotify_url(url):
+                    logger.info(f"Detected Spotify URL: {url}")
+                    # _handle_spotify_url will now use queue_manager.submit_for_download
+                    spotify_handled = await self._handle_spotify_url(url, interaction, page)
+                    if not spotify_handled: # e.g. invalid spotify URL structure after check
+                        await interaction.followup.send("Failed to process Spotify URL. Please check the URL.", ephemeral=True)
+                    return # Spotify handler will manage followup messages
 
-                await self.queue_manager.add_song(interaction.guild_id, song)
-                
-                if not voice_client.is_playing():
-                    await self._play_next(interaction.guild, interaction)
-                else:
-                    # Update the processing message with queue info
-                    position = len(self.queue_manager.queues[interaction.guild_id])
-                    success_embed = discord.Embed(
-                        title="Track Added",
-                        description=f"Added to queue (Position: {position}): {song.title}",
-                        color=discord.Color.green()
-                    )
-                    if song.thumbnail:
-                        success_embed.set_thumbnail(url=song.thumbnail)
-                    success_embed.add_field(name="Duration", value=song.duration)
-                    await processing_message.edit(embed=success_embed)
+                # For direct YouTube URLs or search terms
+                await self.queue_manager.submit_for_download(interaction.guild_id, url, interaction)
+                # The confirmation message "Track Added to Queue" will be sent by _add_to_playback_queue
+                # or a "Download failed" message by _process_download_pipeline.
+                # The initial_embed serves as "working on it".
 
             except Exception as e:
-                logger.error(f"Error in play command: {e}")
-                await interaction.followup.send("Failed to play the song.")
+                logger.error(f"Error in play command: {e}", exc_info=True)
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("Failed to process your request.", ephemeral=True)
+                else:
+                    try:
+                        await interaction.followup.send("Failed to process your request.", ephemeral=True)
+                    except discord.errors.NotFound:
+                        logger.error("Interaction not found for error in play command.")
 
         @self.tree.command(name="skip", description="Skip the current song")
         async def skip(interaction: discord.Interaction):
@@ -816,51 +1164,101 @@ class MusicBot(commands.Bot):
 
         @self.tree.command(name="queue", description="Show the music queue")
         async def queue(interaction: discord.Interaction):
+            # Defer the response to prevent timeout during data gathering
+            await interaction.response.defer(ephemeral=False)
+            
             embed = discord.Embed(title="Music Queue", color=discord.Color.purple())
             
-            current_song = self.queue_manager.current_songs.get(interaction.guild_id)
-            if current_song:
-                embed.add_field(
-                    name="Now Playing",
-                    value=f"[{current_song.title}]({current_song.url})",
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Now Playing",
-                    value="Nothing is currently playing.",
-                    inline=False
-                )
+            try:
+                current_song = self.queue_manager.current_songs.get(interaction.guild_id)
+                if current_song:
+                    embed.add_field(
+                        name="Now Playing",
+                        value=f"[{current_song.title}]({current_song.url})",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Now Playing",
+                        value="Nothing is currently playing.",
+                        inline=False
+                    )
 
-            queue_list = []
-            for idx, song in enumerate(self.queue_manager.queues[interaction.guild_id], 1):
-                queue_list.append(f"{idx}. [{song.title}]({song.url})")
+                queue_list = []
+                # Show playback_queues (songs ready to play) with proper error handling
+                try:
+                    async with self.queue_manager._queue_locks[interaction.guild_id]:
+                        for idx, song in enumerate(self.queue_manager.playback_queues.get(interaction.guild_id, []), 1):
+                            queue_list.append(f"{idx}. [{song.title}]({song.url})")
+                except Exception as e:
+                    logger.error(f"Error accessing queue data: {e}")
+                    queue_list = ["Error accessing queue data"]
 
-            if queue_list:
-                embed.add_field(
-                    name="Up Next",
-                    value="\n".join(queue_list),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Up Next",
-                    value="The queue is empty.",
-                    inline=False
-                )
+                if queue_list:
+                    embed.add_field(
+                        name="Up Next (Ready to Play)",
+                        value="\n".join(queue_list),
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Up Next (Ready to Play)",
+                        value="The playback queue is empty.",
+                        inline=False
+                    )
 
-            await interaction.response.send_message(embed=embed)
-
-
+                # Optionally, show songs in download pipeline with better error handling
+                downloading_list = []
+                try:
+                    # Use a short timeout for the lock to prevent hanging
+                    async with asyncio.timeout(1.0):
+                        async with self.queue_manager._pipeline_locks[interaction.guild_id]:
+                            # Get active downloads
+                            active_dl_urls = list(self.queue_manager.active_downloads.get(interaction.guild_id, {}).keys())
+                            for item_url in active_dl_urls:
+                                downloading_list.append(f"- 🔄 **Downloading:** {item_url[:60]}{'...' if len(item_url)>60 else ''}")
+                            
+                            # Try to get pending downloads safely
+                            pipeline = self.queue_manager.download_pipelines.get(interaction.guild_id)
+                            if pipeline and not pipeline.empty():
+                                try:
+                                    # Create a copy of queue items without consuming them
+                                    temp_pipeline_items = list(pipeline._queue)
+                                    for item_url, _, _, _ in temp_pipeline_items[:5]:  # Limit to 5 pending items
+                                        downloading_list.append(f"- ⏳ **Queued:** {item_url[:50]}{'...' if len(item_url)>50 else ''}")
+                                except Exception as e:
+                                    logger.warning(f"Could not access download queue items: {e}")
+                except asyncio.TimeoutError:
+                    downloading_list.append("- (Queue data unavailable - system busy)")
+                except Exception as e:
+                    logger.error(f"Error accessing download pipeline: {e}")
+                
+                if downloading_list:
+                    embed.add_field(
+                        name="Download Pipeline",
+                        value="\n".join(downloading_list),
+                        inline=False
+                    )
+                
+                await interaction.followup.send(embed=embed)
+                
+            except Exception as e:
+                logger.error(f"Error in queue command: {e}", exc_info=True)
+                await interaction.followup.send("Error retrieving queue information. Please try again later.", ephemeral=True)
 
         @self.tree.command(name="clear", description="Clear the queue")
         async def clear(interaction: discord.Interaction):
-            if not self.queue_manager.queues[interaction.guild_id]:
-                await interaction.response.send_message("The queue is already empty!")
+            # Check both playback and download queues before declaring empty
+            is_playback_empty = not self.queue_manager.playback_queues[interaction.guild_id]
+            is_download_pipeline_empty = self.queue_manager.download_pipelines[interaction.guild_id].empty()
+            is_active_downloads_empty = not self.queue_manager.active_downloads[interaction.guild_id]
+
+            if is_playback_empty and is_download_pipeline_empty and is_active_downloads_empty:
+                await interaction.response.send_message("The queue and download pipeline are already empty!")
                 return
 
             await self.queue_manager.clear_guild_queue(interaction.guild_id)
-            await interaction.response.send_message("🗑️ Cleared the music queue!")
+            await interaction.response.send_message("🗑️ Cleared the music queue and download pipeline!")
 
         @self.tree.command(name="pause", description="Pause the current song")
         async def pause(interaction: discord.Interaction):
@@ -924,7 +1322,11 @@ class MusicBot(commands.Bot):
 
     async def _ensure_voice_client(self, interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
         if not interaction.user.voice:
-            await interaction.followup.send("You must be in a voice channel to use this command!")
+            # Check if interaction already responded
+            if not interaction.response.is_done():
+                await interaction.response.send_message("You must be in a voice channel to use this command!", ephemeral=True)
+            else:
+                await interaction.followup.send("You must be in a voice channel to use this command!", ephemeral=True)
             return None
 
         voice_channel = interaction.user.voice.channel
@@ -944,13 +1346,14 @@ class MusicBot(commands.Bot):
 
     async def _play_next(self, guild: discord.Guild, interaction: discord.Interaction) -> None:
         try:
-            if not guild.id in self.queue_manager.queues or not self.queue_manager.queues[guild.id]:
+            song = await self.queue_manager.get_next_song(guild.id) # Gets from playback_queues
+            if not song:
                 if guild.voice_client:
                     await self._play_leave_sound(guild.voice_client)
+                # Ensure download worker is started if there are pending downloads, even if playback queue is empty now
+                await self.queue_manager._ensure_download_worker_running(guild.id)
                 return
 
-            song = self.queue_manager.queues[guild.id][0]
-            
             # Verify the song file exists before playing
             if not os.path.exists(song.filename):
                 logger.error(f"Song file missing: {song.filename}")
@@ -961,6 +1364,8 @@ class MusicBot(commands.Bot):
 
             self.queue_manager.current_songs[guild.id] = song
             await self.queue_manager.remove_song(guild.id, 0)
+            # Update dashboard state to reflect the new song playing
+            update_stats()
 
             try:
                 audio_source = discord.PCMVolumeTransformer(
@@ -991,13 +1396,20 @@ class MusicBot(commands.Bot):
                 # Clean up the failed song and try next
                 await self.queue_manager.cleanup_file(song.filename)
                 await self._play_next(guild, interaction)
+                # Ensure download worker is started if there are pending downloads
+                await self.queue_manager._ensure_download_worker_running(guild.id)
 
         except Exception as e:
             logger.error(f"Error in play_next: {e}")
-            await interaction.channel.send("Failed to play next song.")
+            if interaction and interaction.channel: # Check if interaction and channel exist
+                await interaction.channel.send("Failed to play next song.")
+            # Ensure download worker is started if there are pending downloads
+            await self.queue_manager._ensure_download_worker_running(guild.id)
 
     async def _play_leave_sound(self, voice_client: discord.VoiceClient) -> None:
         try:
+            # Update dashboard state before potentially leaving
+            update_stats()
             # Wait for 10 seconds
             await asyncio.sleep(10)
             
@@ -1035,14 +1447,19 @@ class MusicBot(commands.Bot):
             # Schedule cleanup of the finished song
             await self.queue_manager.cleanup_file(song.filename)
             self.queue_manager.current_songs.pop(interaction.guild_id, None)
+            # Update dashboard state after song finishes and is removed
+            update_stats()
 
             # Start next song or prepare to leave
-            if self.queue_manager.queues[interaction.guild_id]:
+            if self.queue_manager.playback_queues[interaction.guild_id]: # Check playback_queues
                 logger.info(f"Playing next song in queue for guild: {guild_name}")
                 await self._play_next(interaction.guild, interaction)
             elif interaction.guild.voice_client:
                 logger.info(f"Queue empty, preparing to leave guild: {guild_name}")
                 await self._play_leave_sound(interaction.guild.voice_client)
+            
+            # After a song finishes, ensure the download worker is active to fill the buffer
+            await self.queue_manager._ensure_download_worker_running(interaction.guild_id)
 
         except Exception as e:
             logger.error(f"Error after playback for guild {interaction.guild.name}: {str(e)}", exc_info=True)
@@ -1099,46 +1516,24 @@ class MusicBot(commands.Bot):
                 description="Could not extract Spotify track ID.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
 
-        # Send processing message
-        processing_embed = discord.Embed(
-            title="Processing Track",
-            description="Downloading from Spotify...",
-            color=discord.Color.blue()
-        )
-        processing_message = await interaction.followup.send(embed=processing_embed)
+        # Send processing message - this is now handled by the general play command or the worker
+        # processing_embed = discord.Embed(
+        #     title="Processing Track",
+        #     description="Adding Spotify track to download queue...",
+        #     color=discord.Color.blue()
+        # )
+        # processing_message = await interaction.followup.send(embed=processing_embed)
         
-        # Directly download track from Spotify
-        song = await self.spotify_client.download_track(url)
-        if not song:
-            error_embed = discord.Embed(
-                title="Download Failed",
-                description="Could not download track from Spotify.",
-                color=discord.Color.red()
-            )
-            await processing_message.edit(embed=error_embed)
-            return False
-
-        await self.queue_manager.add_song(interaction.guild_id, song)
-        
-        voice_client = interaction.guild.voice_client
-        if voice_client and not voice_client.is_playing():
-            await self._play_next(interaction.guild, interaction)
-        else:
-            position = len(self.queue_manager.queues[interaction.guild_id])
-            success_embed = discord.Embed(
-                title="Track Added",
-                description=f"Added to queue (Position: {position}): {song.title}",
-                color=discord.Color.green()
-            )
-            if song.thumbnail:
-                success_embed.set_thumbnail(url=song.thumbnail)
-            success_embed.add_field(name="Duration", value=song.duration)
-            
-            # Update the processing message instead of sending a new one
-            await processing_message.edit(embed=success_embed)
+        # Submit to download queue
+        await self.queue_manager.submit_for_download(interaction.guild_id, url, interaction, is_spotify=True)
+        # Confirmation will be sent by the download worker upon successful download and queueing for playback.
+        # The initial "Processing Request" message from /play should suffice for now.
         
         return True
 
@@ -1151,7 +1546,10 @@ class MusicBot(commands.Bot):
                 description="Could not extract Spotify playlist ID.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
 
         # Get basic playlist info for the name
@@ -1168,6 +1566,10 @@ class MusicBot(commands.Bot):
         max_tracks = 100
         start_track = (page - 1) * max_tracks + 1
         
+        # Calculate total number of pages
+        total_tracks = len(await self.spotify_client.get_playlist_tracks(playlist_id))
+        max_pages = (total_tracks + max_tracks - 1) // max_tracks  # Ceiling division
+        
         # Get all tracks metadata first
         playlist_tracks = await self.spotify_client.get_playlist_tracks(playlist_id)
         if not playlist_tracks:
@@ -1176,7 +1578,10 @@ class MusicBot(commands.Bot):
                 description=f"No tracks found in playlist.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
             
         # Apply pagination
@@ -1190,100 +1595,96 @@ class MusicBot(commands.Bot):
                 description=f"Page {page} has no tracks.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
         
         # Send initial progress embed
+        # The /play command now sends an initial "Processing Request" message.
+        # This detailed playlist processing message can be a followup.
         status_embed = discord.Embed(
             title=f"Playlist: {playlist_name}",
-            description=f"Processing tracks: 0/{len(playlist_tracks_page)}",
+            description=f"Found {len(playlist_tracks_page)} tracks on page {page}. Adding to download queue...",
             color=discord.Color.blue()
         )
-        
-        # Add pagination info
-        max_pages = (playlist_total + max_tracks - 1) // max_tracks
-        if max_pages > 1:
-            status_embed.add_field(
-                name="Pagination", 
-                value=f"Page {page}/{max_pages} • Total tracks: {playlist_total}"
-            )
-        
         # Add queued by information
         status_embed.set_footer(text=f"Queued by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
             
-        status_message = await interaction.followup.send(embed=status_embed)
+        # Ensure this followup is valid
+        status_message = None
+        if interaction.response.is_done():
+            status_message = await interaction.followup.send(embed=status_embed)
+        else:
+            # This case should ideally not happen if /play deferred or sent initial message.
+            # Log or handle error if interaction cannot be used.
+            logger.warning("Interaction not ready for followup in _handle_spotify_playlist")
+            await interaction.response.send_message(embed=status_embed) # Attempt to send if not responded
+            # Re-fetch might be needed if send_message was used. This part is tricky.
+            # For simplicity, assume followup.send is the primary path after initial /play message.
+
+        # Process tracks one by one, adding to download queue
+        added_to_pipeline_count = 0
+        failed_count = 0
         
-        # Process tracks one by one, starting playback as soon as the first track is available
-        playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
-        is_playing = False
-        added_count = 0
-        
-        for i, track in enumerate(playlist_tracks_page):
-            if not track:
+        for i, track_data in enumerate(playlist_tracks_page):
+            if not track_data:
+                failed_count +=1
                 continue
                 
             try:
-                # Get the Spotify track URL
-                track_id = track.get('id')
+                track_id = track_data.get('id')
                 if not track_id:
+                    failed_count +=1
                     continue
-                    
+                
                 track_url = f"https://open.spotify.com/track/{track_id}"
+                # Pass necessary track info for potential direct use by Spotify download logic if needed
+                spotify_item_info = self.spotify_client.SpotifyItem(track_data) if hasattr(self.spotify_client, 'SpotifyItem') else track_data
+
+                await self.queue_manager.submit_for_download(
+                    interaction.guild_id, 
+                    track_url, 
+                    interaction, # Pass interaction for potential error messages from worker
+                    is_spotify=True, 
+                    spotify_info=spotify_item_info
+                )
+                added_to_pipeline_count += 1
                 
-                # Update progress before downloading (so user knows which track is being processed)
-                if (i + 1) % 5 == 0 or i == 0:
-                    track_name = track.get('name', 'Unknown')
-                    artist_name = track.get('artists', [{}])[0].get('name', 'Unknown Artist')
-                    status_embed.description = f"Processing tracks: {added_count}/{len(playlist_tracks_page)}\nCurrently downloading: {artist_name} - {track_name}"
-                    await status_message.edit(embed=status_embed)
-                
-                # Download the track
-                song = await self.spotify_client.download_track(track_url)
-                if not song:
-                    continue
-                    
-                # Add song to queue
-                await self.queue_manager.add_song(interaction.guild_id, song)
-                added_count += 1
-                
-                # Start playing if this is the first track and nothing is currently playing
-                voice_client = interaction.guild.voice_client
-                if voice_client and not voice_client.is_playing() and not is_playing:
-                    await self._play_next(interaction.guild, interaction)
-                    is_playing = True
-                    
-                # Update progress message every 5 tracks or for important milestones
-                if (i + 1) % 5 == 0 or (i == len(playlist_tracks_page) - 1 and added_count > 0):
-                    status_embed.description = f"Added {added_count}/{len(playlist_tracks_page)} tracks to queue"
-                    status_embed.color = discord.Color.green() if i == len(playlist_tracks_page) - 1 else discord.Color.blue()
+                if (i + 1) % 10 == 0 and status_message: # Update status message periodically
+                    status_embed.description = f"Added {added_to_pipeline_count}/{len(playlist_tracks_page)} tracks to download queue..."
                     await status_message.edit(embed=status_embed)
 
             except Exception as e:
-                logger.error(f"Error processing playlist track: {e}")
+                logger.error(f"Error submitting playlist track to download queue: {e}")
+                failed_count +=1
                 # Continue with next track
 
         # Final update with completion status
-        if added_count > 0:
-            status_embed.title = f"Playlist: {playlist_name} - Complete"
-            status_embed.description = f"Successfully added {added_count}/{len(playlist_tracks_page)} tracks to queue"
-            status_embed.color = discord.Color.green()
-            
-            # Add pagination info for next page if applicable
-            if page < max_pages:
-                status_embed.add_field(
-                    name="More Tracks", 
-                    value=f"Use `/play {url} page:{page+1}` for the next page",
-                    inline=False
-                )
+        if status_message:
+            if added_to_pipeline_count > 0:
+                status_embed.title = f"Playlist: {playlist_name} - Processing"
+                status_embed.description = f"Successfully submitted {added_to_pipeline_count}/{len(playlist_tracks_page)} tracks to the download queue."
+                if failed_count > 0:
+                    status_embed.description += f" ({failed_count} tracks failed to submit)."
+                status_embed.color = discord.Color.green()
                 
-            await status_message.edit(embed=status_embed)
-        else:
-            status_embed.title = f"Playlist Processing Failed"
-            status_embed.description = f"Could not add any tracks from the playlist"
-            status_embed.color = discord.Color.red()
+                if page < max_pages:
+                    status_embed.add_field(
+                        name="More Tracks", 
+                        value=f"Use `/play {url} page:{page+1}` for the next page.",
+                        inline=False
+                    )
+            else:
+                status_embed.title = f"Playlist Processing Failed"
+                status_embed.description = f"Could not submit any tracks from the playlist to the download queue."
+                if failed_count > 0:
+                    status_embed.description += f" ({failed_count} tracks failed during submission attempt)."
+                status_embed.color = discord.Color.red()
             await status_message.edit(embed=status_embed)
                 
-        return added_count > 0
+        return added_to_pipeline_count > 0
 
     async def _handle_spotify_album(self, url: str, interaction: discord.Interaction, page: int) -> bool:
         """Handle a Spotify album."""
@@ -1294,7 +1695,10 @@ class MusicBot(commands.Bot):
                 description="Could not extract Spotify album ID.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
 
         # Get basic album info for the name
@@ -1315,6 +1719,10 @@ class MusicBot(commands.Bot):
         max_tracks = 100
         start_track = (page - 1) * max_tracks + 1
         
+        # Calculate total number of pages
+        total_tracks = len(await self.spotify_client.get_album_tracks(album_id))
+        max_pages = (total_tracks + max_tracks - 1) // max_tracks  # Ceiling division
+        
         # Get all album tracks first
         album_tracks = await self.spotify_client.get_album_tracks(album_id)
         if not album_tracks:
@@ -1323,7 +1731,10 @@ class MusicBot(commands.Bot):
                 description=f"No tracks found in album.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
             
         # Apply pagination
@@ -1337,104 +1748,93 @@ class MusicBot(commands.Bot):
                 description=f"Page {page} has no tracks.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return False
         
         # Send initial progress embed
         status_embed = discord.Embed(
             title=f"Album: {album_display}",
-            description=f"Processing tracks: 0/{len(album_tracks_page)}",
+            description=f"Found {len(album_tracks_page)} tracks on page {page}. Adding to download queue...",
             color=discord.Color.blue()
         )
         if album_image:
             status_embed.set_thumbnail(url=album_image)
         
-        # Add pagination info
-        max_pages = (album_total + max_tracks - 1) // max_tracks
-        if max_pages > 1:
-            status_embed.add_field(
-                name="Pagination", 
-                value=f"Page {page}/{max_pages} • Total tracks: {album_total}"
-            )
-        
         # Add queued by information
         status_embed.set_footer(text=f"Queued by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
             
-        status_message = await interaction.followup.send(embed=status_embed)
+        status_message = None
+        if interaction.response.is_done():
+            status_message = await interaction.followup.send(embed=status_embed)
+        else:
+            logger.warning("Interaction not ready for followup in _handle_spotify_album")
+            await interaction.response.send_message(embed=status_embed) # Fallback
+
         
-        # Process tracks one by one, starting playback as soon as the first track is available
-        is_playing = False
-        added_count = 0
+        # Process tracks one by one, adding to download queue
+        added_to_pipeline_count = 0
+        failed_count = 0
         
-        for i, track in enumerate(album_tracks_page):
-            if not track:
+        for i, track_data in enumerate(album_tracks_page):
+            if not track_data:
+                failed_count += 1
                 continue
                 
             try:
-                # Get the Spotify track URL
-                track_id = track.get('id')
+                track_id = track_data.get('id')
                 if not track_id:
+                    failed_count +=1
                     continue
                     
                 track_url = f"https://open.spotify.com/track/{track_id}"
-                
-                # Update progress before downloading (so user knows which track is being processed)
-                if (i + 1) % 5 == 0 or i == 0:
-                    track_name = track.get('name', 'Unknown')
-                    status_embed.description = f"Processing tracks: {added_count}/{len(album_tracks_page)}\nCurrently downloading: {track_name}"
-                    await status_message.edit(embed=status_embed)
-                
-                # Download the track
-                song = await self.spotify_client.download_track(track_url)
-                if not song:
-                    continue
-                    
-                # Set album metadata for the song
-                if song.thumbnail is None and album_image:
-                    song.thumbnail = album_image
-                
-                # Add song to queue
-                await self.queue_manager.add_song(interaction.guild_id, song)
-                added_count += 1
-                
-                # Start playing if this is the first track and nothing is currently playing
-                voice_client = interaction.guild.voice_client
-                if voice_client and not voice_client.is_playing() and not is_playing:
-                    await self._play_next(interaction.guild, interaction)
-                    is_playing = True
-                    
-                # Update progress message every 5 tracks or for important milestones
-                if (i + 1) % 5 == 0 or (i == len(album_tracks_page) - 1 and added_count > 0):
-                    status_embed.description = f"Added {added_count}/{len(album_tracks_page)} tracks to queue"
-                    status_embed.color = discord.Color.green() if i == len(album_tracks_page) - 1 else discord.Color.blue()
+                # Pass necessary track info for potential direct use by Spotify download logic if needed
+                spotify_item_info = self.spotify_client.SpotifyItem(track_data) if hasattr(self.spotify_client, 'SpotifyItem') else track_data
+
+                await self.queue_manager.submit_for_download(
+                    interaction.guild_id,
+                    track_url,
+                    interaction, # Pass interaction for potential error messages from worker
+                    is_spotify=True,
+                    spotify_info=spotify_item_info # Pass full track data if useful for spotify_client.download_track
+                )
+                added_to_pipeline_count += 1
+
+                if (i + 1) % 10 == 0 and status_message: # Update status message periodically
+                    status_embed.description = f"Added {added_to_pipeline_count}/{len(album_tracks_page)} tracks to download queue..."
                     await status_message.edit(embed=status_embed)
                     
             except Exception as e:
-                logger.error(f"Error processing album track: {e}")
+                logger.error(f"Error submitting album track to download queue: {e}")
+                failed_count +=1
                 # Continue with next track
 
         # Final update with completion status
-        if added_count > 0:
-            status_embed.title = f"Album: {album_display} - Complete"
-            status_embed.description = f"Successfully added {added_count}/{len(album_tracks_page)} tracks to queue"
-            status_embed.color = discord.Color.green()
+        if status_message:
+            if added_to_pipeline_count > 0:
+                status_embed.title = f"Album: {album_display} - Processing"
+                status_embed.description = f"Successfully submitted {added_to_pipeline_count}/{len(album_tracks_page)} tracks to the download queue."
+                if failed_count > 0:
+                    status_embed.description += f" ({failed_count} tracks failed to submit)."
+                status_embed.color = discord.Color.green()
             
-            # Add pagination info for next page if applicable
-            if page < max_pages:
-                status_embed.add_field(
-                    name="More Tracks", 
-                    value=f"Use `/play {url} page:{page+1}` for the next page",
-                    inline=False
-                )
-                
+                if page < max_pages:
+                    status_embed.add_field(
+                        name="More Tracks", 
+                        value=f"Use `/play {url} page:{page+1}` for the next page.",
+                        inline=False
+                    )
+            else:
+                status_embed.title = f"Album Processing Failed"
+                status_embed.description = f"Could not submit any tracks from the album to the download queue."
+                if failed_count > 0:
+                    status_embed.description += f" ({failed_count} tracks failed during submission attempt)."
+                status_embed.color = discord.Color.red()
             await status_message.edit(embed=status_embed)
-        else:
-            status_embed.title = f"Album Processing Failed"
-            status_embed.description = f"Could not add any tracks from the album"
-            status_embed.color = discord.Color.red()
-            await status_message.edit(embed=status_embed)
                 
-        return added_count > 0
+        return added_to_pipeline_count > 0
 
     async def _download_song(self, url: str) -> Optional[Song]:
         """Download a song from YouTube using yt-dlp."""
@@ -1470,6 +1870,15 @@ class MusicBot(commands.Bot):
                 'format_sort': ['acodec:mp3:128'],
                 'postprocessor_args': ['-ar', '44100'],
                 'prefer_ffmpeg': True,
+                # Add rate limiting to reduce network impact and prevent disconnections
+                'ratelimit': 400000,  # 400KB/s - adjust based on your connection
+                # Add socket timeout to handle network issues gracefully
+                'socket_timeout': 30,
+                # Throttle the requests to YouTube API
+                'sleep_interval': 2,  # sleep 2 seconds between requests
+                'max_sleep_interval': 5,  # maximum sleep time
+                # Limit retries on network errors
+                'retries': 5,
             }
             
             # Add proxy configuration if set in environment variables
@@ -1536,6 +1945,55 @@ class MusicBot(commands.Bot):
 
     @presence_loop.before_loop
     async def before_presence_loop(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(seconds=15) # Check every 15 seconds
+    async def auto_leave_check(self):
+        if not self.is_ready(): # Don't run until bot is ready
+            return
+
+        for vc in self.voice_clients:
+            guild_id = vc.guild.id
+            
+            # Check if anyone non-bot is in the channel
+            human_members = [member for member in vc.channel.members if not member.bot]
+            
+            is_bot_alone = len(human_members) == 0
+            is_playing_or_paused = vc.is_playing() or vc.is_paused()
+            
+            # Check bot's own queues and download state via QueueManager
+            # Ensure queue_manager has self.bot set to access its own structures if needed, or pass guild_id
+            playback_queue_empty = not self.queue_manager.playback_queues.get(guild_id)
+            
+            download_pipeline = self.queue_manager.download_pipelines.get(guild_id)
+            download_pipeline_empty = download_pipeline.empty() if download_pipeline else True
+            
+            active_downloads_for_guild = self.queue_manager.active_downloads.get(guild_id)
+            no_active_downloads = not active_downloads_for_guild # True if dict is empty or None
+
+            is_bot_idle = not is_playing_or_paused and playback_queue_empty and download_pipeline_empty and no_active_downloads
+
+            if is_bot_alone and is_bot_idle:
+                if guild_id not in self.alone_since_timestamps:
+                    self.alone_since_timestamps[guild_id] = asyncio.get_event_loop().time()
+                    logger.info(f"Bot is alone and idle in VC for guild {guild_id}. Starting 30s auto-leave timer.")
+                else:
+                    time_alone = asyncio.get_event_loop().time() - self.alone_since_timestamps[guild_id]
+                    if time_alone > 30: # 30 seconds threshold
+                        logger.info(f"Bot has been alone and idle in guild {guild_id} for {time_alone:.2f}s. Leaving voice channel.")
+                        await vc.disconnect() # Disconnect directly
+                        # No need to play leave sound here, it's an idle timeout.
+                        # _play_leave_sound is for when queue ends.
+                        if guild_id in self.alone_since_timestamps: # Remove timestamp after disconnecting
+                            del self.alone_since_timestamps[guild_id]
+            else:
+                # Conditions for auto-leave are not met (someone joined, or bot became active)
+                if guild_id in self.alone_since_timestamps:
+                    logger.info(f"Conditions for auto-leave no longer met for guild {guild_id}. Resetting timer.")
+                    del self.alone_since_timestamps[guild_id]
+
+    @auto_leave_check.before_loop
+    async def before_auto_leave_check(self):
         await self.wait_until_ready()
 
 # Bot instantiation

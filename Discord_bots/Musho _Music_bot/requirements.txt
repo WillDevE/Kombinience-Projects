@@ -10,12 +10,12 @@ ffmpeg-python>=0.2.0
 
 # Spotify support
 spotipy>=2.22.0
-spotify-dlp==2.2.0  # Specific version required
 
 # Dashboard requirements
 Flask>=2.0.0
 Werkzeug>=2.0.0
 
 # Utilities
-fake-useragent>=0.1.11
-requests>=2.28.0 
+fake-useragent>=1.1.0  # Updated to newer version
+requests>=2.28.0
+# asyncio and concurrent.futures are built-in modules, not needed in requirements 

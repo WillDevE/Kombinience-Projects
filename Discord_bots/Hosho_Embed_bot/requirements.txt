@@ -2,6 +2,4 @@ python-dotenv
 discord.py
 aiohttp
 yt-dlp
-boto3
-PyNaCl
-botocore 
+PyNaCl 

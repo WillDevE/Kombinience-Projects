@@ -142,7 +142,8 @@ def update_stats():
                     'total_bot_usage_time': 0,  # Total time in voice in seconds
                     'is_currently_in_voice': False,
                     'voice_join_time': None,
-                    'most_active_hours': [0] * 24  # Array to track activity by hour
+                    'most_active_hours': [0] * 24,  # Array to track activity by hour
+                    'icon_url': guild.icon.url if guild.icon else None
                 }
                 guild_changes = True
                 any_changes = True
@@ -153,7 +154,8 @@ def update_stats():
                     'name': guild.name,
                     'member_count': guild.member_count,
                     'songs_played': 0,
-                    'queue_length': 0
+                    'queue_length': 0,
+                    'icon_url': guild.icon.url if guild.icon else None
                 }
                 guild_changes = True
                 any_changes = True
@@ -162,6 +164,14 @@ def update_stats():
             if dashboard_data['server_stats'][guild_id]['member_count'] != guild.member_count:
                 dashboard_data['server_stats'][guild_id]['member_count'] = guild.member_count
                 dashboard_data['guild_stats'][guild_id]['member_count'] = guild.member_count
+                guild_changes = True
+                any_changes = True
+                
+            # Update guild icon URL if it changed (less likely, but possible)
+            new_icon_url = guild.icon.url if guild.icon else None
+            if dashboard_data['guild_stats'][guild_id].get('icon_url') != new_icon_url:
+                dashboard_data['guild_stats'][guild_id]['icon_url'] = new_icon_url
+                dashboard_data['server_stats'][guild_id]['icon_url'] = new_icon_url
                 guild_changes = True
                 any_changes = True
                 
@@ -201,7 +211,7 @@ def update_stats():
                 
             # Update queue length for this guild - only if changed
             if hasattr(bot_instance, 'queue_manager'):
-                queue = bot_instance.queue_manager.queues.get(guild.id, [])
+                queue = bot_instance.queue_manager.playback_queues.get(guild.id, [])
                 queue_length = len(queue)
                 
                 if dashboard_data['guild_stats'][guild_id]['queue_length'] != queue_length:
@@ -366,9 +376,9 @@ def record_song_played(guild_id, song):
                 reverse=True
             )[:15]  # Keep only top 15 songs per server
         
-        # Add to global history, keeping most recent 8
+        # Add to global history, keeping most recent 10
         dashboard_data['song_history'].insert(0, song_entry)
-        dashboard_data['song_history'] = dashboard_data['song_history'][:8]
+        dashboard_data['song_history'] = dashboard_data['song_history'][:10]
         data_changed['song_history'] = True
         
         # Update global top songs
@@ -392,7 +402,7 @@ def record_song_played(guild_id, song):
             dashboard_data['top_songs'], 
             key=lambda x: x['play_count'], 
             reverse=True
-        )[:8]  # Keep only top 8 songs
+        )[:10]  # Keep only top 10 songs
         
         # Update last_updated timestamp
         dashboard_data['bot_stats']['last_updated'] = int(datetime.now().timestamp())
@@ -435,7 +445,8 @@ def save_dashboard_data():
                 'queue_length': stats.get('queue_length', 0),
                 'first_seen': stats.get('first_seen', ''),
                 'total_bot_usage_time': stats.get('total_bot_usage_time', 0),
-                'most_active_hours': stats.get('most_active_hours', [0] * 24)
+                'most_active_hours': stats.get('most_active_hours', [0] * 24),
+                'icon_url': stats.get('icon_url', None)
             }
             
             # Skip transient data like is_currently_in_voice, voice_join_time, and current_song
@@ -506,7 +517,8 @@ def load_dashboard_data():
                             'total_bot_usage_time': 0,
                             'is_currently_in_voice': False,
                             'voice_join_time': None,
-                            'most_active_hours': [0] * 24
+                            'most_active_hours': [0] * 24,
+                            'icon_url': stats.get('icon_url', None)
                         }
                     
                     # Update with loaded data
@@ -519,6 +531,7 @@ def load_dashboard_data():
                     server_stats['first_seen'] = stats.get('first_seen', server_stats['first_seen'])
                     server_stats['total_bot_usage_time'] = stats.get('total_bot_usage_time', 0)
                     server_stats['most_active_hours'] = stats.get('most_active_hours', [0] * 24)
+                    server_stats['icon_url'] = stats.get('icon_url', server_stats['icon_url'])
                 
             logger.info("Dashboard data loaded successfully")
     except Exception as e:

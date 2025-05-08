@@ -1,0 +1,26 @@
+{
+    "volume": 1.0,
+    "mic_volume": 1.0,
+    "soundboard_volume": 0.20689655172413793,
+    "monitor_volume": 0.1282051282051282,
+    "self_listen": true,
+    "use_resampling": false,
+    "use_limiter": true,
+    "soundboard_only": false,
+    "monitor_mic": false,
+    "input_device": "Microphone (V8)",
+    "output_device": "CABLE Input (VB-Audio Virtual C",
+    "monitor_device": "Speakers (Realtek(R) Audio)",
+    "buttons": [
+        {
+            "label": "Nuke",
+            "style": "Danger",
+            "sound_filename": "Nuclear Alarm Siren_.mp3"
+        },
+        {
+            "label": "Trap Royalty",
+            "style": "Success",
+            "sound_filename": "Fetty Wap - Trap Queen (Royalty remix by very cool tutorial)_.mp3"
+        }
+    ]
+}

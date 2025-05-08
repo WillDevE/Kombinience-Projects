@@ -1,0 +1,5 @@
+numpy>=1.21.0
+PyAudio>=0.2.13
+soundfile>=0.10.3
+sv-ttk>=2.0
+scipy>=1.7.0 

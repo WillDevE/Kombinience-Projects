@@ -1,12 +1,66 @@
 {
   "bot_stats": {
-    "total_songs_played": 3,
+    "total_songs_played": 9,
     "uptime": 0,
-    "guilds": 1,
-    "active_voice_channels": 0,
-    "start_time": "2025-04-19 23:23:29"
+    "guilds": 4,
+    "active_voice_channels": 1,
+    "start_time": "2025-05-08 08:41:38"
   },
   "song_history": [
+    {
+      "title": "jon-YAKITORY - Konton Boogie",
+      "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+      "timestamp": "2025-05-08 08:45:02",
+      "timestamp_unix": 1746665102,
+      "guild": "MarineVeil",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+      "guild_id": "974634434781409290"
+    },
+    {
+      "title": "Ado - \u30af\u30e9\u30af\u30e9",
+      "url": "https://open.spotify.com/track/7lcXrOj9HdsHFQfNNBR4XS",
+      "timestamp": "2025-05-08 08:41:50",
+      "timestamp_unix": 1746664910,
+      "guild": "MarineVeil",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731b1310c35fad57bc85027f19",
+      "guild_id": "974634434781409290"
+    },
+    {
+      "title": "Ado - \u30af\u30e9\u30af\u30e9",
+      "url": "https://open.spotify.com/track/7lcXrOj9HdsHFQfNNBR4XS",
+      "timestamp": "2025-05-08 08:39:42",
+      "timestamp_unix": 1746664782,
+      "guild": "MarineVeil",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731b1310c35fad57bc85027f19",
+      "guild_id": "974634434781409290"
+    },
+    {
+      "title": "jon-YAKITORY - Konton Boogie",
+      "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+      "timestamp": "2025-05-08 08:37:06",
+      "timestamp_unix": 1746664626,
+      "guild": "MarineVeil",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+      "guild_id": "974634434781409290"
+    },
+    {
+      "title": "Ado - Aishite Aishite Aishite",
+      "url": "https://open.spotify.com/track/4gpvY7b9wHA9G1ZsMDu15b",
+      "timestamp": "2025-05-08 08:34:04",
+      "timestamp_unix": 1746664444,
+      "guild": "MarineVeil",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b273f5912abed0ea22e746552771",
+      "guild_id": "974634434781409290"
+    },
+    {
+      "title": "Ado - Usseewa",
+      "url": "https://open.spotify.com/track/61KYsWS25JXUO4fGb1138X?si=f3592c2c2a4841b2",
+      "timestamp": "2025-04-20 03:05:30",
+      "timestamp_unix": 1745089530,
+      "guild": "Unknown Server",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b27364381fb5ba549f149ae74560",
+      "guild_id": "666427824097460264"
+    },
     {
       "title": "bbno$ check but it's the full miku version",
       "url": "https://www.youtube.com/watch?v=q0Xj7-xw7m0",
@@ -38,38 +92,6 @@
       "guild": "MarineVeil",
       "thumbnail": "https://i.ytimg.com/vi_webp/ZWhQTS_xm0o/maxresdefault.webp",
       "guild_id": "974634434781409290"
-    },
-    {
-      "title": "\u3042\u3089\u308c\u3084\u3053\u3093\u3053\u3093 / \u5f0c\u8aa0\uff1aMUSIC VIDEO",
-      "url": "https://youtu.be/ZWhQTS_xm0o?list=RDGMEMCMFH2exzjBeE_zAHHJOdxg",
-      "timestamp": "2025-04-19 15:31:37",
-      "guild": "MarineVeil",
-      "thumbnail": "https://i.ytimg.com/vi_webp/ZWhQTS_xm0o/maxresdefault.webp",
-      "guild_id": "974634434781409290"
-    },
-    {
-      "title": "\u3042\u3089\u308c\u3084\u3053\u3093\u3053\u3093 / \u5f0c\u8aa0\uff1aMUSIC VIDEO",
-      "url": "https://youtu.be/ZWhQTS_xm0o?list=RDGMEMCMFH2exzjBeE_zAHHJOdxg",
-      "timestamp": "2025-04-19 14:56:39",
-      "guild": "MarineVeil",
-      "thumbnail": "https://i.ytimg.com/vi_webp/ZWhQTS_xm0o/maxresdefault.webp",
-      "guild_id": "974634434781409290"
-    },
-    {
-      "title": "\u3042\u3089\u308c\u3084\u3053\u3093\u3053\u3093 / \u5f0c\u8aa0\uff1aMUSIC VIDEO",
-      "url": "https://youtu.be/ZWhQTS_xm0o?list=RDGMEMCMFH2exzjBeE_zAHHJOdxg",
-      "timestamp": "2025-04-19 14:10:56",
-      "guild": "MarineVeil",
-      "thumbnail": "https://i.ytimg.com/vi_webp/ZWhQTS_xm0o/maxresdefault.webp",
-      "guild_id": "974634434781409290"
-    },
-    {
-      "title": "The Weeknd - After Hours",
-      "url": "https://open.spotify.com/track/2p8IUWQDrpjuFltbdgLOag?si=22d592c7e41a4979",
-      "timestamp": "2025-04-19 13:58:40",
-      "guild": "MarineVeil",
-      "thumbnail": "https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36",
-      "guild_id": "974634434781409290"
     }
   ],
   "top_songs": [
@@ -98,9 +120,33 @@
       "play_count": 2
     },
     {
+      "title": "Ado - \u30af\u30e9\u30af\u30e9",
+      "url": "https://open.spotify.com/track/7lcXrOj9HdsHFQfNNBR4XS",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731b1310c35fad57bc85027f19",
+      "play_count": 2
+    },
+    {
+      "title": "jon-YAKITORY - Konton Boogie",
+      "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+      "play_count": 2
+    },
+    {
       "title": "Kanye West - Black Skinhead",
       "url": "https://open.spotify.com/track/722tgOgdIbNe3BEyLnejw4?si=e31d98b5ff724c8d",
       "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731dacfbc31cc873d132958af9",
+      "play_count": 1
+    },
+    {
+      "title": "Ado - Usseewa",
+      "url": "https://open.spotify.com/track/61KYsWS25JXUO4fGb1138X?si=f3592c2c2a4841b2",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b27364381fb5ba549f149ae74560",
+      "play_count": 1
+    },
+    {
+      "title": "Ado - Aishite Aishite Aishite",
+      "url": "https://open.spotify.com/track/4gpvY7b9wHA9G1ZsMDu15b",
+      "thumbnail": "https://i.scdn.co/image/ab67616d0000b273f5912abed0ea22e746552771",
       "play_count": 1
     }
   ],
@@ -108,17 +154,152 @@
     "974634434781409290": {
       "name": "MarineVeil",
       "member_count": 51,
-      "songs_played": 3,
-      "queue_length": 0
+      "songs_played": 8,
+      "queue_length": 1,
+      "icon_url": "https://cdn.discordapp.com/icons/974634434781409290/4652b6d7f5913ddb39cc1f0c53d47c7e.png?size=1024",
+      "current_song": {
+        "title": "Konton Boogie",
+        "artist": "jon-YAKITORY",
+        "full_title": "jon-YAKITORY - Konton Boogie",
+        "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+        "duration": "2:34",
+        "duration_seconds": 154,
+        "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+        "started_at": "2025-05-08 08:45:02",
+        "start_time_unix": 1746665102,
+        "source": "Spotify"
+      }
+    },
+    "666427824097460264": {
+      "name": "Hello's Secret Test Server",
+      "member_count": 6,
+      "songs_played": 0,
+      "queue_length": 0,
+      "icon_url": null
+    },
+    "1030432529959882752": {
+      "name": "TheBoisNation",
+      "member_count": 52,
+      "songs_played": 0,
+      "queue_length": 0,
+      "icon_url": "https://cdn.discordapp.com/icons/1030432529959882752/8051b23ca31bf0d23d4b95441f30d8e7.png?size=1024"
+    },
+    "1360577080936632463": {
+      "name": "CCIS8B",
+      "member_count": 35,
+      "songs_played": 0,
+      "queue_length": 0,
+      "icon_url": "https://cdn.discordapp.com/icons/1360577080936632463/8a84e77f79d20aadbc51d21b319ccd95.png?size=1024"
     }
   },
   "server_stats": {
-    "974634434781409290": {
-      "name": "MarineVeil",
-      "member_count": 51,
-      "songs_played": 3,
+    "666427824097460264": {
+      "name": "Hello's Secret Test Server",
+      "member_count": 6,
+      "songs_played": 1,
       "total_play_time": 0,
       "song_history": [
+        {
+          "title": "Ado - Usseewa",
+          "url": "https://open.spotify.com/track/61KYsWS25JXUO4fGb1138X?si=f3592c2c2a4841b2",
+          "timestamp": "2025-04-20 03:05:30",
+          "timestamp_unix": 1745089530,
+          "guild": "Unknown Server",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b27364381fb5ba549f149ae74560",
+          "guild_id": "666427824097460264"
+        }
+      ],
+      "top_songs": [
+        {
+          "title": "Ado - Usseewa",
+          "url": "https://open.spotify.com/track/61KYsWS25JXUO4fGb1138X?si=f3592c2c2a4841b2",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b27364381fb5ba549f149ae74560",
+          "play_count": 1
+        }
+      ],
+      "last_active": "2025-04-20 03:05:30",
+      "queue_length": 0,
+      "first_seen": "2025-04-20 03:05:19",
+      "total_bot_usage_time": 0,
+      "most_active_hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "icon_url": null
+    },
+    "974634434781409290": {
+      "name": "MarineVeil",
+      "member_count": 49,
+      "songs_played": 8,
+      "total_play_time": 0,
+      "song_history": [
+        {
+          "title": "jon-YAKITORY - Konton Boogie",
+          "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+          "timestamp": "2025-05-08 08:45:02",
+          "timestamp_unix": 1746665102,
+          "guild": "MarineVeil",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+          "guild_id": "974634434781409290"
+        },
+        {
+          "title": "Ado - \u30af\u30e9\u30af\u30e9",
+          "url": "https://open.spotify.com/track/7lcXrOj9HdsHFQfNNBR4XS",
+          "timestamp": "2025-05-08 08:41:50",
+          "timestamp_unix": 1746664910,
+          "guild": "MarineVeil",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731b1310c35fad57bc85027f19",
+          "guild_id": "974634434781409290"
+        },
+        {
+          "title": "Ado - \u30af\u30e9\u30af\u30e9",
+          "url": "https://open.spotify.com/track/7lcXrOj9HdsHFQfNNBR4XS",
+          "timestamp": "2025-05-08 08:39:42",
+          "timestamp_unix": 1746664782,
+          "guild": "MarineVeil",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731b1310c35fad57bc85027f19",
+          "guild_id": "974634434781409290"
+        },
+        {
+          "title": "jon-YAKITORY - Konton Boogie",
+          "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+          "timestamp": "2025-05-08 08:37:06",
+          "timestamp_unix": 1746664626,
+          "guild": "MarineVeil",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+          "guild_id": "974634434781409290"
+        },
+        {
+          "title": "Ado - Aishite Aishite Aishite",
+          "url": "https://open.spotify.com/track/4gpvY7b9wHA9G1ZsMDu15b",
+          "timestamp": "2025-05-08 08:34:04",
+          "timestamp_unix": 1746664444,
+          "guild": "MarineVeil",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b273f5912abed0ea22e746552771",
+          "guild_id": "974634434781409290"
+        },
         {
           "title": "bbno$ check but it's the full miku version",
           "url": "https://www.youtube.com/watch?v=q0Xj7-xw7m0",
@@ -152,16 +333,73 @@
           "play_count": 2
         },
         {
+          "title": "Ado - \u30af\u30e9\u30af\u30e9",
+          "url": "https://open.spotify.com/track/7lcXrOj9HdsHFQfNNBR4XS",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b2731b1310c35fad57bc85027f19",
+          "play_count": 2
+        },
+        {
+          "title": "jon-YAKITORY - Konton Boogie",
+          "url": "https://open.spotify.com/track/2YAzpDuHmAe5kROOlyDnmv",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b273ee4f46a7cd8e8e3d4b5525cf",
+          "play_count": 2
+        },
+        {
           "title": "\u3042\u3089\u308c\u3084\u3053\u3093\u3053\u3093 / \u5f0c\u8aa0\uff1aMUSIC VIDEO",
           "url": "https://youtu.be/ZWhQTS_xm0o?list=RDGMEMCMFH2exzjBeE_zAHHJOdxg",
           "thumbnail": "https://i.ytimg.com/vi_webp/ZWhQTS_xm0o/maxresdefault.webp",
           "play_count": 1
+        },
+        {
+          "title": "Ado - Aishite Aishite Aishite",
+          "url": "https://open.spotify.com/track/4gpvY7b9wHA9G1ZsMDu15b",
+          "thumbnail": "https://i.scdn.co/image/ab67616d0000b273f5912abed0ea22e746552771",
+          "play_count": 1
         }
       ],
-      "last_active": "2025-04-19 20:45:15",
-      "queue_length": 0,
+      "last_active": "2025-05-08 08:45:02",
+      "queue_length": 1,
       "first_seen": "2025-04-19 15:52:37",
-      "total_bot_usage_time": 573.2720582485199,
+      "total_bot_usage_time": 661.2720582485199,
+      "most_active_hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        9,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        328,
+        0,
+        0,
+        0,
+        0,
+        581,
+        0,
+        0,
+        0
+      ],
+      "icon_url": "https://cdn.discordapp.com/icons/974634434781409290/4652b6d7f5913ddb39cc1f0c53d47c7e.png?size=1024"
+    },
+    "1030432529959882752": {
+      "name": "TheBoisNation",
+      "member_count": 52,
+      "songs_played": 0,
+      "total_play_time": 0,
+      "song_history": [],
+      "top_songs": [],
+      "last_active": "2025-04-20 03:05:19",
+      "queue_length": 0,
+      "first_seen": "2025-04-20 03:05:19",
+      "total_bot_usage_time": 0,
       "most_active_hours": [
         0,
         0,
@@ -178,16 +416,56 @@
         0,
         0,
         0,
-        328,
         0,
         0,
         0,
         0,
-        581,
+        0,
+        0,
         0,
         0,
         0
-      ]
+      ],
+      "icon_url": null
+    },
+    "1360577080936632463": {
+      "name": "CCIS8B",
+      "member_count": 35,
+      "songs_played": 0,
+      "total_play_time": 0,
+      "song_history": [],
+      "top_songs": [],
+      "last_active": "2025-04-20 03:05:19",
+      "queue_length": 0,
+      "first_seen": "2025-04-20 03:05:19",
+      "total_bot_usage_time": 0,
+      "most_active_hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "icon_url": null
     }
   }
 }

@@ -1,39 +1,38 @@
-FROM python:3.11-slim
+FROM python:3.9-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PIP_NO_CACHE_DIR=1
-
-# Create app directory
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies including ffmpeg
+RUN apt-get update && apt-get install -y \
     ffmpeg \
-    curl \
-    python3-dev \
     build-essential \
+    libffi-dev \
+    git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create necessary directories with appropriate permissions
-RUN mkdir -p /app/downloads /app/logs /app/templates /app/static /app/data && \
-    chmod -R 777 /app/downloads /app/logs /app/data
-
-# Install Python dependencies first (for better caching)
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY *.py .
-COPY *.mp3 .
-COPY templates/ templates/
-COPY static/ static/
+# Create directories for data and downloads
+RUN mkdir -p data downloads/spotify
 
-# Expose dashboard port
-EXPOSE 80
+# Copy the application code
+COPY . .
 
-# Command to run the bot
-CMD ["python", "musicbot.py"]
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Create a non-root user to run the bot
+RUN groupadd -r botuser && useradd -r -g botuser botuser
+RUN chown -R botuser:botuser /app
+USER botuser
+
+# Start the bot
+CMD ["python", "musicbot.py"] 

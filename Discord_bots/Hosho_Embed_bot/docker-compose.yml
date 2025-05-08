@@ -9,9 +9,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs
-      - ./html_counter.txt:/app/html_counter.txt
-      # Uncomment the line below if you need to modify the template without rebuilding:
-      # - ./video_embed_template.html:/app/video_embed_template.html
+      - ./video_counter.json:/app/video_counter.json
+      # - ./html_counter.txt:/app/html_counter.txt # Removed as no longer used
+      # - ./video_embed_template.html:/app/video_embed_template.html # Removed as no longer used
     environment:
       - TZ=UTC
       # Use host.docker.internal to access the host machine from within Docker

@@ -1,0 +1,24 @@
+# Exclude directories
+.git/
+.github/
+__pycache__/
+data/
+downloads/
+*.log
+
+# Environment files
+.env
+.env.*
+
+# User data
+youtube_cookies.txt
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Editor files
+.vscode/
+.idea/
+.DS_Store 

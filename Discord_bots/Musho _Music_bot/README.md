@@ -1,88 +1,114 @@
-# Musho Music Bot
+# Discord Music Bot
 
-A Discord music bot that can play audio from YouTube and directly download from Spotify.
+A feature-rich Discord music bot with Spotify integration and a web dashboard.
 
 ## Features
 
-- Play music from YouTube URLs
-- Direct download and playback from Spotify (tracks, playlists, albums)
-- Queue management
-- Skip, pause, and resume functionality
-- Web dashboard for monitoring playback and statistics
+- Play music from YouTube and Spotify (tracks, albums, playlists)
+- Queue management with download pipeline
+- Auto-leave voice channels when alone for 30 seconds
+- Web dashboard for music statistics
+- Robust download queue management (max 10 songs in buffer)
+- YouTube cookies support for accessing age-restricted content
 
 ## Setup
 
-1. Clone this repository
-2. Create a Discord bot and get the token
-3. Create a Spotify developer application and get credentials
-4. Set up environment variables in `.env` file:
+### Environment Variables
 
-```
-# Discord Bot Token
-DISCORD_BOT_TOKEN=your_discord_bot_token_here
+Copy the example environment file and fill in your credentials:
 
-# Cobalt API Configuration (optional)
-COBALT_API_URL=http://localhost:9000
-COBALT_API_KEY=your_cobalt_api_key_here
-
-# Spotify API Configuration
-SPOTIFY_CLIENT_ID=your_spotify_client_id_here
-SPOTIFY_CLIENT_SECRET=your_spotify_client_secret_here
-SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
-
-# Bot Configuration
-DEFAULT_VOLUME=0.2
-MAX_SONG_LENGTH=900  # 15 minutes in seconds
-
-# Dashboard Configuration
-DASHBOARD_PORT=8080
-DASHBOARD_URL_PREFIX=/musho
-
-# Network Configuration (optional)
-PROXY_URL=http://your-proxy-server:port
+```bash
+cp .env.example .env
 ```
 
-5. Install dependencies: `pip install -r requirements.txt`
-6. Run the bot: `python musicbot.py`
+Edit `.env` with your Discord bot token, Spotify API credentials, and other settings.
 
-## Docker Setup
+### Running with Docker (Recommended)
 
-Alternatively, you can run the bot using Docker:
+The easiest way to run this bot is with Docker:
 
-```
-docker-compose up -d
-```
+1. **Prerequisites:**
+   - Install [Docker](https://docs.docker.com/get-docker/)
+   - Install [Docker Compose](https://docs.docker.com/compose/install/)
+
+2. **Build and start the bot:**
+   ```bash
+   docker-compose up -d
+   ```
+
+3. **View logs:**
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. **Stop the bot:**
+   ```bash
+   docker-compose down
+   ```
+
+### Running Without Docker
+
+If you want to run the bot directly:
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Install FFmpeg:**
+   - Windows: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
+   - macOS: `brew install ffmpeg`
+   - Linux: `sudo apt install ffmpeg`
+
+3. **Run the bot:**
+   ```bash
+   python musicbot.py
+   ```
+
+## Dashboard
+
+The web dashboard is available at:
+http://localhost:8080/musho/ 
+
+(Adjust the port and URL prefix if you changed them in the .env file)
 
 ## Commands
 
-- `/play <url>` - Play audio from YouTube URL or Spotify URL
-- `/spotify <url>` - Play specifically from Spotify (track, playlist, or album)
-- `/skip` - Skip the current song
+- `/play <url>` - Play a YouTube URL or Spotify link (track/album/playlist)
 - `/queue` - Display the current queue
-- `/clear` - Clear the queue
-- `/pause` - Pause the current song
+- `/skip` - Skip the current song
+- `/pause` - Pause playback
 - `/resume` - Resume playback
+- `/clear` - Clear the queue
+- `/setcookies` - Set YouTube cookies for accessing age-restricted content
 
-## Spotify Support
+## Troubleshooting
 
-The bot now directly handles Spotify integration using the internal yt-dlp functionality, searching YouTube Music for the exact tracks without requiring external tools like spotify-dlp. This means:
+- If you encounter issues with Spotify integration, verify your Spotify API credentials.
+- For playback issues, ensure FFmpeg is installed correctly.
+- If the bot can't join voice channels, check your Discord bot permissions.
 
-1. Higher audio quality through better matching
-2. More accurate metadata and album art
-3. Direct support for Spotify's catalog
-4. Proxy and cookie support for Spotify downloads
+## Docker Management
 
-The bot can play from these Spotify URLs:
-- Tracks: `https://open.spotify.com/track/...`
-- Playlists: `https://open.spotify.com/playlist/...`
-- Albums: `https://open.spotify.com/album/...`
+- **Update the bot:**
+  ```bash
+  docker-compose pull
+  docker-compose up -d --build
+  ```
 
-For playlists and albums, the bot will add up to 25 tracks to the queue to avoid overwhelming the system.
+- **View container stats:**
+  ```bash
+  docker stats discord-music-bot
+  ```
 
-## Web Dashboard
+- **Access container shell:**
+  ```bash
+  docker-compose exec music-bot bash
+  ```
 
-The bot includes a web dashboard accessible at `http://your-server:8080/musho/` that provides:
-
-- Real-time playback information
-- Guild statistics and history
-- Song play history and analytics 
+- **Clear persistent data:**
+  ```bash
+  docker-compose down
+  rm -rf ./downloads/* ./data/*
+  docker-compose up -d
+  ``` 

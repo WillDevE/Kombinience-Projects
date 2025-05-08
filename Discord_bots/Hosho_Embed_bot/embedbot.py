@@ -10,6 +10,7 @@ import urllib.parse
 import itertools
 import tempfile
 import time
+import io
 
 from dotenv import load_dotenv
 
@@ -18,9 +19,18 @@ import discord
 import yt_dlp
 
 from discord.ext import commands, tasks
-import boto3
-import botocore
-from botocore.exceptions import ClientError
+
+# Custom exception for file size errors
+class FileSizeExceededError(Exception):
+    """Custom exception for when a file exceeds the Discord upload limit."""
+    def __init__(self, file_size: int, limit: int, message: str = "File exceeds Discord upload limit"):
+        self.file_size = file_size
+        self.limit = limit
+        self.message = message
+        super().__init__(self.message)
+
+    def __str__(self):
+        return f"{self.message}: {self.file_size} bytes > {self.limit} bytes (Limit: {self.limit / (1024*1024):.1f}MB)"
 
 # Set up logging
 def setup_logging():
@@ -64,15 +74,14 @@ logger = setup_logging()
 load_dotenv()
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 ALLOWED_GUILDS = [int(id) for id in os.getenv("ALLOWED_GUILDS", "").split(",") if id]
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("S3_REGION_NAME")
-HTML_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "video_embed_template.html")
-COUNTER_FILE = os.path.join(os.path.dirname(__file__), "html_counter.txt")
 COBALT_API_URL = os.getenv("COBALT_API_URL")
 # Custom Docker host alias, defaults to host.docker.internal
 DOCKER_HOST_ALIAS = os.getenv("DOCKER_HOST_ALIAS", "host.docker.internal")
+# New configuration for Discord file size limit
+DISCORD_FILE_LIMIT_MB = float(os.getenv("DISCORD_FILE_LIMIT_MB", "10"))
+DISCORD_FILE_LIMIT_BYTES = int(DISCORD_FILE_LIMIT_MB * 1024 * 1024)
+# Path for the JSON counter file
+COUNTER_JSON_FILE = os.path.join(os.path.dirname(__file__), "video_counter.json")
 
 def load_config() -> dict:
     """Load configuration from config.json."""
@@ -88,14 +97,6 @@ def load_config() -> dict:
     except Exception as e:
         logger.error(f"Error loading config: {e}")
         return {}
-
-# Initialize S3 client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    region_name=AWS_REGION
-)
 
 # --- Bot Setup ---
 intents = discord.Intents.default()
@@ -331,8 +332,13 @@ async def download_via_ytdlp(url: str) -> Optional[Tuple[bytes, str]]:
     logger.info(f"Falling back to yt-dlp for URL: {url}")
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
+            # Increased ytdlp internal limit slightly above common Discord limits to catch more,
+            # but the main check is done after download.
+            # User requested 10MB, Discord non-nitro is 25MB. Setting ytdlp to 50M as a soft cap.
+            # The hard cap DISCORD_FILE_LIMIT_BYTES will be checked after download.
+            # The original 500M was a very loose cap.
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4][filesize<=500M]+bestaudio[ext=m4a]/best[ext=mp4][filesize<=500M]/best[filesize<=500M]',
+                'format': 'bestvideo[ext=mp4][filesize<=50M]+bestaudio[ext=m4a]/best[ext=mp4][filesize<=50M]/best[filesize<=50M]',
                 'outtmpl': os.path.join(temp_dir, 'video.%(ext)s'),
                 'quiet': True,
                 'noplaylist': True,
@@ -360,10 +366,10 @@ async def download_via_ytdlp(url: str) -> Optional[Tuple[bytes, str]]:
                         video_content = f.read()
                     logger.info(f"Successfully downloaded video via yt-dlp: {len(video_content)} bytes")
 
-                    # Check size after download
-                    if len(video_content) > 500 * 1024 * 1024:  # 500 MB limit
-                         logger.warning(f"yt-dlp downloaded file exceeds 500MB limit ({len(video_content)} bytes). Skipping.")
-                         return None
+                    # Check size after download - this is a pre-check, main check in process_video_url
+                    if len(video_content) > 100 * 1024 * 1024:  # Generous pre-limit e.g. 100 MB
+                         logger.warning(f"yt-dlp downloaded file initially exceeds 100MB ({len(video_content)/(1024*1024):.2f} MB). Further check needed.")
+                         # We don't return None here, let process_video_url handle the precise DISCORD_FILE_LIMIT_BYTES check
 
                     return video_content, info.get('title', 'Video')
                 except yt_dlp.utils.DownloadError as e:
@@ -400,74 +406,30 @@ async def get_video_content(url: str) -> Optional[Tuple[bytes, str]]:
     return None
 
 
-async def create_redirect_html(original_url: str, filename: str) -> str:
-    """Create a simple redirect HTML page."""
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta http-equiv="refresh" content="0;url={original_url}">
-        <meta property="og:title" content="Redirecting..."/>
-        <meta property="og:description" content="Click to view original content"/>
-    </head>
-    <body>
-        <p>Redirecting to <a href="{original_url}">original content</a>...</p>
-    </body>
-    </html>
+# Modified process_video_url to check size and return content for direct upload
+async def process_video_url(original_url: str, author_name: str = "") -> tuple[bytes, str]:
     """
-    
-    logger.info(f"Uploading redirect HTML {filename} to S3")
-    try:
-        html_url = await upload_to_s3(html_content.encode('utf-8'), filename, S3_BUCKET_NAME, content_type='text/html')
-        logger.info(f"Redirect HTML uploaded successfully: {html_url}")
-        return html_url
-    except Exception as e:
-         logger.error(f"Failed to upload redirect HTML {filename}: {e}", exc_info=True)
-         raise
-
-
-async def process_video_url(original_url: str, message_content: str = "", author_name: str = "") -> tuple[Optional[str], Optional[str]]:
-    """
-    Process a video URL using Cobalt/yt-dlp, upload to S3, and return URLs.
-    Returns (html_redirect_url, s3_video_url) or (None, None) on failure.
+    Process a video URL using Cobalt/yt-dlp.
+    Checks if the video is within Discord's file size limit.
+    Returns (video_content, video_title) or raises FileSizeExceededError or other exceptions.
     """
     logger.info(f"Processing video URL from {author_name}: {original_url}")
 
-    try:
-        # Get video content
-        download_result = await get_video_content(original_url)
+    download_result = await get_video_content(original_url)
 
-        if not download_result:
-            logger.error(f"Failed to get video content for {original_url}")
-            raise Exception("Failed to download video content")
+    if not download_result:
+        logger.error(f"Failed to get video content for {original_url}")
+        raise Exception("Failed to download video content")
 
-        video_content, video_title = download_result
+    video_content, video_title = download_result
 
-        # Check size before uploading
-        if len(video_content) > 500 * 1024 * 1024:  # 500MB limit
-            logger.warning(f"Video content exceeds 500MB limit ({len(video_content)} bytes) before S3 upload. Skipping.")
-            raise Exception("Video file too large")
+    # Check size against Discord's limit
+    if len(video_content) > DISCORD_FILE_LIMIT_BYTES:
+        logger.warning(f"Video content for {original_url} exceeds Discord limit: {len(video_content)} bytes > {DISCORD_FILE_LIMIT_BYTES} bytes.")
+        raise FileSizeExceededError(file_size=len(video_content), limit=DISCORD_FILE_LIMIT_BYTES)
 
-        # Generate unique filename
-        video_number = await get_next_html_number()
-        video_filename = f"{video_number}.mp4"
-        html_filename = f"{video_number}.html"
-
-        # Upload video to S3
-        logger.info(f"Uploading video {video_filename} to S3")
-        video_url = await upload_to_s3(video_content, video_filename, S3_BUCKET_NAME, content_type='video/mp4')
-        logger.info(f"Video successfully uploaded to S3: {video_url}")
-
-        # Create and upload redirect HTML
-        logger.info(f"Generating and uploading redirect HTML {html_filename}")
-        html_url = await create_redirect_html(original_url, html_filename)
-        logger.info(f"Redirect HTML created and uploaded: {html_url}")
-
-        return html_url, video_url
-
-    except Exception as e:
-        logger.error(f"Error processing video URL {original_url}: {e}", exc_info=True)
-        raise
+    logger.info(f"Video content for {original_url} is within Discord limit ({len(video_content)} bytes). Title: {video_title}")
+    return video_content, video_title
 
 
 # --- Helper Functions ---
@@ -489,49 +451,60 @@ def get_video_provider(url: str) -> str:
         except:
              return "Link"  # Generic fallback
 
-async def upload_to_s3(file_content: bytes, filename: str, bucket: str, content_type: str = 'video/mp4') -> str:
-    """Upload a file to S3 and return its URL."""
-    logger.info(f"Starting S3 upload for file: {filename}")
+# New helper function to sanitize filenames
+def sanitize_filename(filename: str, default_name: str = "video.mp4") -> str:
+    """Sanitizes a string to be a valid filename."""
+    if not filename:
+        filename = default_name
+    
+    # Remove characters that are typically problematic in filenames
+    # This is a basic sanitization. For more robust, consider a library or more extensive regex.
+    sanitized = re.sub(r'[\\/*?:"<>|]',"", filename)
+    # Replace sequences of whitespace with a single underscore
+    sanitized = re.sub(r'\s+', '_', sanitized)
+    # Limit length (Discord has its own limits, but this is a general precaution)
+    sanitized = sanitized[:200] # Max filename length sanity
+    
+    # Ensure it's not empty after sanitization
+    if not sanitized.strip("._"):
+        sanitized = default_name
+        
+    # Ensure it has a common video extension if not already present
+    if not re.search(r'\.(mp4|mov|webm|mkv|avi)$', sanitized, re.IGNORECASE):
+        sanitized += ".mp4"
+        
+    return sanitized
+
+# New function to get and increment video number from JSON file
+async def get_next_video_number() -> int:
+    """Get the next video number, reading from and writing to a JSON file."""
+    current_number = 0
     try:
-        logger.debug(f"Uploading {len(file_content)} bytes to S3 bucket: {bucket}, Key: {filename}")
-        s3_client.put_object(
-            Bucket=bucket,
-            Key=filename,
-            Body=file_content,
-            ContentType=content_type
-        )
-
-        url = f"https://{bucket}.s3.{AWS_REGION}.amazonaws.com/{urllib.parse.quote(filename)}"
-        logger.info(f"Successfully uploaded file to S3: {url}")
-        return url
-
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code')
-        error_msg = f"Error uploading {filename} to S3 (Code: {error_code}): {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        raise
-
-
-async def get_next_html_number() -> int:
-    """Get the next available HTML number."""
-    try:
-        if os.path.exists(COUNTER_FILE):
-            with open(COUNTER_FILE, 'r') as f:
-                current = int(f.read().strip())
+        if os.path.exists(COUNTER_JSON_FILE):
+            with open(COUNTER_JSON_FILE, 'r') as f:
+                try:
+                    data = json.load(f)
+                    current_number = data.get("video_count", 0)
+                except json.JSONDecodeError:
+                    logger.warning(f"{COUNTER_JSON_FILE} is not valid JSON. Initializing count.")
+                    current_number = 0 # Initialize if JSON is malformed
         else:
-            current = 0
+            logger.info(f"{COUNTER_JSON_FILE} not found. Initializing count.")
+            current_number = 0 # Initialize if file doesn't exist
 
-        next_number = current + 1
+        next_number = current_number + 1
 
-        with open(COUNTER_FILE, 'w') as f:
-            f.write(str(next_number))
-
+        with open(COUNTER_JSON_FILE, 'w') as f:
+            json.dump({"video_count": next_number}, f, indent=4)
+        
+        logger.debug(f"Video counter updated to: {next_number}")
         return next_number
-    except Exception as e:
-        logger.error(f"Error getting next HTML number: {e}")
-        # Fallback using timestamp seconds + milliseconds to reduce collision chance
-        return int(time.time() * 1000)
 
+    except Exception as e:
+        logger.error(f"Error managing video counter file {COUNTER_JSON_FILE}: {e}", exc_info=True)
+        # Fallback in case of file I/O errors to prevent breaking the main flow
+        # Using a timestamp-based fallback, though less ideal for exact matching with old system
+        return int(time.time() * 1000) % 1000000 # Returns a number to avoid breaking message format
 
 # --- Bot Events ---
 @bot.event
@@ -581,10 +554,9 @@ async def on_message(message: discord.Message):
 
 
 async def handle_video_url(message: discord.Message, original_url: str, message_content: str = ""):
-    """Handles the processing of a video URL message, including retries and feedback."""
-    logger.info(f"Handling URL: {original_url} from message {message.id}")
+    """Handles the processing of a video URL message, direct Discord upload, and feedback."""
+    logger.info(f"Handling URL: {original_url} from message {message.id} by {message.author.display_name}")
 
-    # Add processing reaction immediately
     processing_reaction_added = False
     try:
         await message.add_reaction("⏳")
@@ -597,48 +569,62 @@ async def handle_video_url(message: discord.Message, original_url: str, message_
     except Exception as e:
         logger.error(f"Failed to add processing reaction to message {message.id}: {e}", exc_info=True)
 
-    success = False
-    max_retries = 2
+    # success_overall means the URL was handled (either uploaded, or confirmed too large, or error acknowledged)
+    success_overall = False 
+    # uploaded_to_discord specifically tracks if the file was sent to Discord
+    uploaded_to_discord = False
+    max_retries = 2 # Retries for download/processing errors, not for "file too large"
     last_error = None
 
     for attempt in range(max_retries):
         try:
-            # Process the video URL
-            result_urls = await process_video_url(original_url, message_content, message.author.display_name)
+            # Process the video URL (downloads and checks size)
+            video_content, video_title = await process_video_url(original_url, message.author.display_name)
 
-            if not result_urls or not all(result_urls):
-                 raise Exception("Processing returned incomplete results")
-
-            html_url, video_url = result_urls
-
-            # Format the message
+            sanitized_title = sanitize_filename(video_title if video_title else "video")
+            discord_file = discord.File(io.BytesIO(video_content), filename=sanitized_title)
+            
             author_name = message.author.display_name
             provider_name = get_video_provider(original_url)
+            video_number_str = ""
+            try:
+                video_num = await get_next_video_number()
+                video_number_str = f" *#{video_num}*" # Add space before for separation
+            except Exception as e_num:
+                logger.error(f"Failed to get video number: {e_num}")
+                # video_number_str remains empty if there's an error
 
-            # Construct the message - Wrap html_url in <> to suppress its embed
-            if message_content:
-                base_len = len(f"{author_name}:  [{provider_name}](<{html_url}>) | [MP4]({video_url})")
-                max_content_len = 2000 - base_len
-                if len(message_content) > max_content_len:
-                    message_content = message_content[:max_content_len - 3] + "..."
-                hyperlink_message = f"{author_name}: {message_content} [{provider_name}](<{html_url}>) | [MP4]({video_url})"
+            # Wrap original_url in <> to suppress its embed
+            text_link_part = f"([Original {provider_name}](<{original_url}>))"
+            
+            # Construct reply text, ensuring it fits within Discord's 2000 char limit
+            # Example: "User: Some text here ([Original TikTok](url)) *#123*"
+            # available_length_for_user_text = 2000 - (len(author_name) + ": " + space + link_part + space + video_number_str + safety_margin)
+            base_elements_len = len(author_name) + 2 + 1 + len(text_link_part) + len(video_number_str) + 10 # +2 for ": ", +1 for space before link, +10 safety
+            available_length_for_user_text = 2000 - base_elements_len
+
+            if message_content: # User's text accompanying the URL
+                if len(message_content) > available_length_for_user_text:
+                    truncated_message_content = message_content[:available_length_for_user_text-3] + "..."
+                else:
+                    truncated_message_content = message_content
+                reply_text = f"{author_name}: {truncated_message_content} {text_link_part}{video_number_str}"
             else:
-                hyperlink_message = f"{author_name}: [{provider_name}](<{html_url}>) | [MP4]({video_url})"
+                reply_text = f"{author_name}: {text_link_part}{video_number_str}"
 
-            # Send the message
-            await message.channel.send(hyperlink_message, allowed_mentions=discord.AllowedMentions.none())
-            logger.info(f"Sent embed links for {original_url} to channel {message.channel.id}")
+            # Send the message with the video file
+            await message.channel.send(content=reply_text, file=discord_file, allowed_mentions=discord.AllowedMentions.none())
+            logger.info(f"Successfully uploaded video for {original_url} from {author_name} directly to Discord channel {message.channel.id}")
 
             # Delete original message (only in guilds, check permissions)
             if message.guild:
                 try:
-                    # Check bot permissions before attempting delete
                     bot_member = message.guild.me
                     if bot_member.guild_permissions.manage_messages:
                          await message.delete()
                          logger.debug(f"Deleted original message {message.id}")
                     else:
-                         logger.warning(f"Missing 'Manage Messages' permission in guild {message.guild.id} to delete original message.")
+                         logger.warning(f"Missing 'Manage Messages' permission in guild {message.guild.id} to delete original message {message.id}.")
                 except discord.Forbidden:
                      logger.warning(f"Missing permissions to delete message {message.id} in channel {message.channel.id}")
                 except discord.NotFound:
@@ -646,43 +632,71 @@ async def handle_video_url(message: discord.Message, original_url: str, message_
                 except Exception as e:
                      logger.error(f"Failed to delete message {message.id}: {e}", exc_info=True)
 
-            success = True
-            break
+            success_overall = True
+            uploaded_to_discord = True
+            break # Exit retry loop on success
 
-        except Exception as e:
+        except FileSizeExceededError as e:
+            last_error = e
+            logger.warning(f"Video from {original_url} is too large for Discord upload: {e.file_size} bytes. Limit is {DISCORD_FILE_LIMIT_BYTES} bytes ({DISCORD_FILE_LIMIT_MB}MB).")
+            
+            # This case is a "successful" handling, just not an upload. No retries needed.
+            # Reply to user about the size limit
+            limit_mb_str = f"{DISCORD_FILE_LIMIT_MB:.1f}".rstrip('0').rstrip('.')
+            # Wrap original_url in <> to suppress its embed in the error message
+            reply_msg = f"Sorry {message.author.mention}, the video from <{original_url}> is too large for me to upload to Discord (my limit is {limit_mb_str}MB)."
+            try:
+                await message.reply(reply_msg, mention_author=False, allowed_mentions=discord.AllowedMentions(users=[message.author]))
+            except Exception as reply_err:
+                logger.error(f"Failed to send 'file too large' reply for {original_url}: {reply_err}")
+
+            success_overall = True # The "too large" situation is handled.
+            break # Exit retry loop
+
+        except Exception as e: # Catch other errors (download, cobalt, etc.)
             last_error = e
             logger.error(f"Attempt {attempt + 1}/{max_retries} failed for {original_url}: {e}", exc_info=True)
             if attempt < max_retries - 1:
-                wait_time = 1.5 ** attempt
+                wait_time = 1.5 ** attempt # Exponential backoff
                 logger.info(f"Retrying in {wait_time:.2f} seconds...")
                 await asyncio.sleep(wait_time)
+            # If it's the last attempt and still fails, success_overall remains False
 
-    # Cleanup reactions and send error message if all retries failed
+    # Cleanup reactions
     if processing_reaction_added:
         try:
             await message.remove_reaction("⏳", bot.user)
-        except Exception:
-             pass
+        except Exception: # nosemgrep: general-exception-without-logging # Logging not critical here
+             pass # Ignore if already removed or message deleted
 
-    if not success:
+    if not success_overall: # All retries for general errors failed
         logger.error(f"All {max_retries} attempts failed for {original_url}. Last error: {last_error}")
         try:
-            # Add error reaction
             await message.add_reaction("❌")
-        except Exception:
+        except Exception: # nosemgrep: general-exception-without-logging
              pass
+    elif uploaded_to_discord: # Successful upload
+        try:
+            # Optionally add a success reaction if desired, or just rely on the message being sent.
+            # await message.add_reaction("✅") 
+            pass
+        except Exception: # nosemgrep: general-exception-without-logging
+            pass
+    elif success_overall and not uploaded_to_discord: # This means it was too large (FileSizeExceededError)
+        try:
+            await message.add_reaction("❌") # Already added in the except block, but as a fallback.
+        except Exception: # nosemgrep: general-exception-without-logging
+            pass
 
 
 # Start the bot
 if __name__ == "__main__":
      if not BOT_TOKEN:
           logger.critical("DISCORD_BOT_TOKEN environment variable not set.")
-     elif not S3_BUCKET_NAME or not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY or not AWS_REGION:
-          logger.critical("S3 environment variables (Bucket, Key ID, Secret Key, Region) are not fully configured.")
      elif not COBALT_API_URL:
           logger.warning("COBALT_API_URL environment variable not set. Cobalt functionality will be disabled.")
-          logger.info("Starting Discord bot (Cobalt disabled)...")
+          logger.info(f"Starting Discord bot (Cobalt disabled, Discord Upload Limit: {DISCORD_FILE_LIMIT_MB}MB)...")
           bot.run(BOT_TOKEN)
      else:
-          logger.info("Starting Discord bot...")
+          logger.info(f"Starting Discord bot (Discord Upload Limit: {DISCORD_FILE_LIMIT_MB}MB)...")
           bot.run(BOT_TOKEN)

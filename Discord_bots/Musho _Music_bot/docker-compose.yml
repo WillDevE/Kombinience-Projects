@@ -1,35 +1,42 @@
-version: '3'
-
+# No version number needed for Compose V2
 services:
-  musicbot:
-    build:
+  music-bot:
+    build: 
       context: .
       dockerfile: Dockerfile
-    container_name: discord-musicbot
+    container_name: discord-music-bot
     restart: unless-stopped
-    privileged: true
     volumes:
-      - ./logs:/app/logs
-      - ./downloads:/app/downloads
-      - ./youtube_cookies.txt:/app/youtube_cookies.txt
-      - ./.spotify-cache:/root/.spotify-dlp
-      - ./templates:/app/templates
-      - ./static:/app/static
       - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./.env:/app/.env:ro  # Read-only mount for security
+      - ./youtube_cookies.txt:/app/youtube_cookies.txt:ro  # Read-only mount for cookies
     ports:
-      - "8080:80"
+      - "${DASHBOARD_PORT:-8080}:${DASHBOARD_PORT:-8080}"  # Dashboard port (defaults to 8080)
     environment:
-      - TZ=UTC
-      - DASHBOARD_PORT=8080
-      - DASHBOARD_URL_PREFIX=/musho
-    env_file:
-      - .env
-    # Resource constraints to prevent container from using too much system resources
-    mem_limit: 2G
-    memswap_limit: 2G
-    # Healthcheck to monitor container health
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI}
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-8080}
+      - DASHBOARD_URL_PREFIX=${DASHBOARD_URL_PREFIX:-/musho}
+      - DEFAULT_VOLUME=${DEFAULT_VOLUME:-0.2}
+      - MAX_SONG_LENGTH=${MAX_SONG_LENGTH:-7200}
+      - PROXY_URL=${PROXY_URL:-}
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    # Healthcheck to monitor the container status
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.path.exists('/app/logs')"]
-      interval: 30s
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:${DASHBOARD_PORT:-8080}${DASHBOARD_URL_PREFIX:-/musho}/')"]
+      interval: 1m
       timeout: 10s
       retries: 3
+      start_period: 30s
+    # Security settings
+    security_opt:
+      - no-new-privileges:true 

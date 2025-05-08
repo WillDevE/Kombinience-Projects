@@ -1,0 +1,12 @@
+flask==2.3.3
+Werkzeug==2.3.7
+python-dotenv==1.0.0
+flask-wtf==1.2.1
+flask-limiter==3.5.0
+bleach==6.1.0
+boto3==1.33.6
+botocore==1.33.6
+ffmpeg-python==0.2.0
+requests==2.31.0
+python-magic==0.4.27
+python-magic-bin==0.4.14; sys_platform == 'win32'

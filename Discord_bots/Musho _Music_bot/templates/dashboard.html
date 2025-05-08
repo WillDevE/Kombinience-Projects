@@ -20,6 +20,15 @@
             <div class="logo">
                 <h1>Musho <span>Music Dashboard</span></h1>
             </div>
+            <nav>
+                <button class="mobile-toggle" aria-label="Toggle navigation">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <ul class="nav-links">
+                    <li><a href="#" class="nav-link active" data-target="overview-content">Overview</a></li>
+                    <li><a href="#" class="nav-link" data-target="servers-content">Servers</a></li>
+                </ul>
+            </nav>
         </div>
     </header>
 
@@ -29,183 +38,190 @@
             <button class="refresh-btn"><i class="fas fa-sync-alt"></i> Refresh Now</button>
         </div>
         
-        <h2><i class="fas fa-chart-bar"></i> Bot Overview</h2>
-        <div class="dashboard">
-            <!-- Bot Stats - Fixed 4 columns layout -->
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Uptime</h3>
-                    <div class="card-icon"><i class="fas fa-clock"></i></div>
-                </div>
-                <div class="stat-value" id="uptime">{{ data.bot_stats.uptime }}</div>
-                <div class="stat-label">Online Time</div>
-            </div>
-            
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Servers</h3>
-                    <div class="card-icon"><i class="fas fa-server"></i></div>
-                </div>
-                <div class="stat-value" id="guild-count">{{ data.bot_stats.guilds }}</div>
-                <div class="stat-label">Total Discord Servers</div>
-            </div>
-            
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Songs Played</h3>
-                    <div class="card-icon"><i class="fas fa-music"></i></div>
-                </div>
-                <div class="stat-value" id="songs-played">{{ data.bot_stats.total_songs_played }}</div>
-                <div class="stat-label">All Time</div>
-            </div>
-            
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Active Voice</h3>
-                    <div class="card-icon"><i class="fas fa-volume-up"></i></div>
-                </div>
-                <div class="stat-value" id="voice-connections">{{ data.bot_stats.active_voice_channels }}</div>
-                <div class="stat-label">Current Voice Channels</div>
-            </div>
-        </div>
-
-        <!-- Top Songs -->
-        <div class="history" id="top-songs">
-            <div class="history-header">
-                <h2 class="history-title"><i class="fas fa-trophy"></i> Top Songs</h2>
-            </div>
-            <div class="song-list">
-                {% if data.top_songs %}
-                    {% for song in data.top_songs[:8] %}
-                    <div class="song-item">
-                        {% if song.thumbnail %}
-                        <img src="{{ song.thumbnail }}" alt="{{ song.title }}" class="song-thumbnail">
-                        {% else %}
-                        <div class="song-thumbnail" style="background-color: #7289da; display: flex; align-items: center; justify-content: center;">
-                            <i class="fas fa-music" style="color: white; font-size: 24px;"></i>
-                        </div>
-                        {% endif %}
-                        <div class="song-info">
-                            <div class="song-title">
-                                <a href="{{ song.url }}" target="_blank" title="{{ song.title }}">{{ song.title }}</a>
-                            </div>
-                            <div class="song-meta">
-                                <i class="fas fa-play"></i> {{ song.play_count }} plays
-                            </div>
-                        </div>
+        <!-- Overview Content Section -->
+        <div id="overview-content" class="content-section active">
+            <div class="dashboard">
+                <!-- Bot Stats - Fixed 4 columns layout -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Uptime</h3>
+                        <div class="card-icon"><i class="fas fa-clock"></i></div>
                     </div>
-                    {% endfor %}
-                {% else %}
-                    <p class="text-center">No songs have been played yet. Use /play in a Discord server to get started!</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <!-- Recent Song History -->
-        <div class="history" id="history">
-            <div class="history-header">
-                <h2 class="history-title"><i class="fas fa-history"></i> Recent Song History</h2>
-            </div>
-            <div class="song-list">
-                {% if data.song_history %}
-                    {% for song in data.song_history[:8] %}
-                    <div class="song-item">
-                        {% if song.thumbnail %}
-                        <img src="{{ song.thumbnail }}" alt="{{ song.title }}" class="song-thumbnail">
-                        {% else %}
-                        <div class="song-thumbnail" style="background-color: #7289da; display: flex; align-items: center; justify-content: center;">
-                            <i class="fas fa-music" style="color: white; font-size: 24px;"></i>
-                        </div>
-                        {% endif %}
-                        <div class="song-info">
-                            <div class="song-title">
-                                <a href="{{ song.url }}" target="_blank" title="{{ song.title }}">{{ song.title }}</a>
-                            </div>
-                            <div class="song-meta">
-                                <i class="fas fa-clock"></i> {{ song.timestamp }}
-                                <br>
-                                <i class="fas fa-server"></i> {{ song.guild }}
-                            </div>
-                        </div>
+                    <div class="stat-value" id="uptime">{{ data.bot_stats.uptime }}</div>
+                    <div class="stat-label">Online Time</div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Servers</h3>
+                        <div class="card-icon"><i class="fas fa-server"></i></div>
                     </div>
-                    {% endfor %}
-                {% else %}
-                    <p class="text-center">No song history available yet. When songs are played, they'll appear here!</p>
-                {% endif %}
+                    <div class="stat-value" id="guild-count">{{ data.bot_stats.guilds }}</div>
+                    <div class="stat-label">Total Discord Servers</div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Songs Played</h3>
+                        <div class="card-icon"><i class="fas fa-music"></i></div>
+                    </div>
+                    <div class="stat-value" id="songs-played">{{ data.bot_stats.total_songs_played }}</div>
+                    <div class="stat-label">All Time</div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Active Voice</h3>
+                        <div class="card-icon"><i class="fas fa-volume-up"></i></div>
+                    </div>
+                    <div class="stat-value" id="voice-connections">{{ data.bot_stats.active_voice_channels }}</div>
+                    <div class="stat-label">Current Voice Channels</div>
+                </div>
             </div>
-        </div>
+            
 
-        <!-- Guilds/Servers -->
-        <div class="guild-section" id="guilds">
-            <h2 class="section-title"><i class="fas fa-server"></i> Connected Servers</h2>
-            <div class="guild-list">
-                {% for guild_id, guild in data.guild_stats.items() %}
-                <div class="guild-card" data-guild-id="{{ guild_id }}">
-                    <!-- Guild name moved to the top -->
-                    <div class="guild-name">{{ guild.name }}</div>
-                    
-                    {% if guild.current_song %}
-                    <div class="current-song with-image" 
-                         style="--song-bg-image: url('{{ guild.current_song.thumbnail }}')"
-                         data-start-time="{{ guild.current_song.start_time_unix|default('') }}"
-                         data-duration-seconds="{{ guild.current_song.duration_seconds|default(0) }}"
-                         data-guild-id="{{ guild_id }}">
-                        <div class="current-song-status">
-                            <div class="current-song-label">
-                                <i class="fas fa-play-circle"></i> Now Playing
-                            </div>
-                            <div class="song-time-display">
-                                <span class="current-time">0:00</span> / <span class="total-time">{{ guild.current_song.duration }}</span>
-                            </div>
+            <!-- Container for Top Songs and Recent History -->
+            <div class="columns-container">
+                <!-- Top Songs Column -->
+                <div class="column">
+                    <div class="history" id="top-songs">
+                        <div class="history-header">
+                            <h2 class="history-title"><i class="fas fa-trophy"></i> Top Songs</h2>
                         </div>
-                        <div class="current-song-details">
-                            <div class="song-title">
-                                <a href="{{ guild.current_song.url }}" target="_blank" title="{{ guild.current_song.title }}">{{ guild.current_song.title }}</a>
-                            </div>
-                            <div class="song-progress-bar">
-                                <div class="progress-bar">
-                                    <div class="progress-filled" style="width: 0%"></div>
+                        <div class="song-list">
+                            {% if data.top_songs %}
+                                {% for song in data.top_songs[:10] %}
+                                <div class="song-item">
+                                    {% if song.thumbnail %}
+                                    <img src="{{ song.thumbnail }}" alt="{{ song.title }}" class="song-thumbnail">
+                                    {% else %}
+                                    <div class="song-thumbnail" style="background-color: #7289da; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-music" style="color: white; font-size: 24px;"></i>
+                                    </div>
+                                    {% endif %}
+                                    <div class="song-info">
+                                        <div class="song-title">
+                                            <a href="{{ song.url }}" target="_blank" title="{{ song.title }}">{{ song.title }}</a>
+                                        </div>
+                                        <div class="song-meta">
+                                            <i class="fas fa-play"></i> {{ song.play_count }} plays
+                                        </div>
+                                    </div>
                                 </div>
+                                {% endfor %}
+                            {% else %}
+                                <p class="text-center">No songs have been played yet. Use /play in a Discord server to get started!</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Song History Column -->
+                <div class="column">
+                    <div class="history" id="history">
+                        <div class="history-header">
+                            <h2 class="history-title"><i class="fas fa-history"></i> Recent Song History</h2>
+                        </div>
+                        <div class="song-list">
+                            {% if data.song_history %}
+                                {% for song in data.song_history[:10] %}
+                                <div class="song-item">
+                                    {% if song.thumbnail %}
+                                    <img src="{{ song.thumbnail }}" alt="{{ song.title }}" class="song-thumbnail">
+                                    {% else %}
+                                    <div class="song-thumbnail" style="background-color: #7289da; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-music" style="color: white; font-size: 24px;"></i>
+                                    </div>
+                                    {% endif %}
+                                    <div class="song-info">
+                                        <div class="song-title">
+                                            <a href="{{ song.url }}" target="_blank" title="{{ song.title }}">{{ song.title }}</a>
+                                        </div>
+                                        <div class="song-meta">
+                                            <i class="fas fa-clock"></i> {{ song.timestamp }}
+                                            <br>
+                                            <i class="fas fa-server"></i> {{ song.guild }}
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <p class="text-center">No song history available yet. When songs are played, they'll appear here!</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Servers Content Section (Initially Hidden) -->
+        <div id="servers-content" class="content-section" style="display: none;">
+            <!-- Guilds/Servers -->
+            <div class="guild-section" id="guilds">
+                <div class="guild-list">
+                    {% for guild_id, guild in data.guild_stats.items() %}
+                    <div class="guild-card" data-guild-id="{{ guild_id }}">
+                        <!-- Guild name moved inside -->
+                        
+                        {% if guild.current_song %}
+                        <div class="current-song with-image" 
+                             style="background-image: url('{{ guild.current_song.thumbnail }}')"
+                             data-start-time="{{ guild.current_song.start_time_unix|default('') }}"
+                             data-duration-seconds="{{ guild.current_song.duration_seconds|default(0) }}"
+                             data-guild-id="{{ guild_id }}">
+                            <div class="guild-name">{{ guild.name }}</div>
+                            <div class="current-song-status">
+                                <div class="current-song-label">
+                                    <i class="fas fa-play-circle"></i> Now Playing
+                                </div>
+                                <div class="song-time-display">
+                                    <span class="current-time">0:00</span> / <span class="total-time">{{ guild.current_song.duration }}</span>
+                                </div>
+                            </div>
+                            <div class="current-song-details">
+                                <div class="song-title">
+                                    <a href="{{ guild.current_song.url }}" target="_blank" title="{{ guild.current_song.title }}">{{ guild.current_song.title }}</a>
+                                </div>
+                                <div class="song-progress-bar">
+                                    <div class="progress-bar">
+                                        <div class="progress-filled" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% else %}
+                        <div class="current-song no-song" 
+                             style="background-image: url('{{ guild.icon_url or url_for('static', filename='images/default_guild_icon.png') }}');">
+                             <div class="guild-name">{{ guild.name }}</div>
+                            <!-- Add back the status indicator -->
+                            <div class="current-song-status">
+                                <div class="current-song-label">
+                                    <i class="fas fa-pause-circle"></i> Not Playing
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Guild stats only (name moved to top) -->
+                        <div class="guild-stats">
+                            <div class="guild-stat">
+                                <i class="fas fa-users" title="Members"></i>
+                                <div class="guild-stat-value">{{ guild.member_count }}</div>
+                            </div>
+                            <div class="guild-stat">
+                                <i class="fas fa-music" title="Songs Played"></i>
+                                <div class="guild-stat-value">{{ guild.songs_played }}</div>
+                            </div>
+                            <div class="guild-stat">
+                                <i class="fas fa-list-ol" title="Queue Length"></i>
+                                <div class="guild-stat-value">{{ guild.queue_length }}</div>
                             </div>
                         </div>
                     </div>
                     {% else %}
-                    <div class="current-song no-song">
-                        <div class="current-song-status">
-                            <div class="current-song-label">
-                                <i class="fas fa-pause-circle"></i> Not Playing
-                            </div>
-                        </div>
-                        <div class="current-song-details">
-                            <div class="song-title">
-                                <a href="#">Ready to play music!</a>
-                            </div>
-                            <div class="song-meta">
-                                <i class="fas fa-info-circle"></i> Use /play to start a song
-                            </div>
-                        </div>
-                    </div>
-                    {% endif %}
-                    
-                    <!-- Guild stats only (name moved to top) -->
-                    <div class="guild-stats">
-                        <div class="guild-stat">
-                            <div class="guild-stat-value">{{ guild.member_count }}</div>
-                            <div class="guild-stat-label">Members</div>
-                        </div>
-                        <div class="guild-stat">
-                            <div class="guild-stat-value">{{ guild.songs_played }}</div>
-                            <div class="guild-stat-label">Songs Played</div>
-                        </div>
-                        <div class="guild-stat">
-                            <div class="guild-stat-value">{{ guild.queue_length }}</div>
-                            <div class="guild-stat-label">Queue Length</div>
-                        </div>
-                    </div>
+                    <p class="text-center">No servers connected. Add your bot to a Discord server to get started!</p>
+                    {% endfor %}
                 </div>
-                {% else %}
-                <p class="text-center">No servers connected. Add your bot to a Discord server to get started!</p>
-                {% endfor %}
             </div>
         </div>
     </main>

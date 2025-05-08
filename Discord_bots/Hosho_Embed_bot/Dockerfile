@@ -13,8 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code
 COPY embedbot.py .
-COPY html_counter.txt .
-COPY video_embed_template.html .
+# COPY html_counter.txt . # Removed as no longer used
+# COPY video_embed_template.html . # Removed as no longer used
+COPY video_counter.json .
 COPY .env .
 
 # Create logs directory
